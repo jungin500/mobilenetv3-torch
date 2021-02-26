@@ -48,15 +48,15 @@ if __name__ == '__main__':
         labels=labels,
         root_dir=args.root_dir,
         device=device,
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop((224, 224)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ]),
+        # transform=transforms.Compose([
+        #     transforms.RandomResizedCrop((224, 224)),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(
+        #         mean=[0.485, 0.456, 0.406],
+        #         std=[0.229, 0.224, 0.225]
+        #     )
+        # ]),
         use_cache=not args.no_cache,
         dataset_usage_pct=args.dataset_pct
     )
@@ -99,7 +99,7 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(args.continue_weight))
 
     model.to(device)
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.RMSprop(model.parameters(),
                                     lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
 
@@ -125,7 +125,12 @@ if __name__ == '__main__':
         running_loss = 0
         print("[%s] Begin training sequence" % (str(datetime.now()),))
 
+        next_dataset_timer = 0
         for i, data in enumerate(train_dataloader):
+            if next_dataset_timer != 0:
+                diff = time() - next_dataset_timer
+                print("Took %d seconds!" % (diff,))
+
             input, label = data
 
             if first_batch:
@@ -148,6 +153,8 @@ if __name__ == '__main__':
                 f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
                 (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
 
+            next_dataset_timer = time()
+
         running_loss /= i
 
         print("[%s] Begin valiating sequence" % (str(datetime.now()),))
@@ -155,6 +162,7 @@ if __name__ == '__main__':
         # Validation time
         validation_accuracy_set = 0
         validation_items = 0
+
         for i, data in enumerate(valid_dataloader):
             input, label = data
             output = model(input)
@@ -169,6 +177,7 @@ if __name__ == '__main__':
 
             validation_accuracy_set += metric
             validation_items += batch_items
+
 
         metric = validation_accuracy_set / validation_items
         print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))

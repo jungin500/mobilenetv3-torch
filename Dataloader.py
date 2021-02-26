@@ -5,6 +5,8 @@ import pickle
 
 import torch
 from PIL import Image
+import cv2
+import numpy as np
 from tqdm import tqdm
 
 CACHE_BASE_DIR = "." + os.sep + ".cache"
@@ -95,13 +97,23 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         return len(self.img_path_list)
 
     def __getitem__(self, idx):
-        image = Image.open(self.img_path_list[idx]).convert("RGB")
-        if self.transform is not None:
-            image = self.transform(image)
-        label = torch.Tensor([self.img_class_list[idx]])
-        return image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
+        # PIL-version (old, took 8secs!)
+        # image = Image.open(self.img_path_list[idx]).convert("RGB")
+        # if self.transform is not None:
+        #     image = self.transform(image)
+        # label = torch.Tensor([self.img_class_list[idx]])
+        # image, label = image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
         # return image, label
 
+        # OpenCV version (maximizing GPU extents)
+        image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (224, 224), cv2.INTER_CUBIC)
+        image = np.transpose(image, [2, 0, 1])
+        image = torch.tensor(image, device=self.device, dtype=torch.float) / 255.
+        label = torch.tensor(self.img_class_list[idx], device=self.device)
+
+        return image, label
 
 if __name__ == '__main__':
     from ILSVRC2012Preprocessor import LabelReader

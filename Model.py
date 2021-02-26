@@ -22,10 +22,10 @@ class SqueezeExciteModule(nn.Module):
         self.se_0_1 = nn.Flatten()
 
         self.se_1_0 = nn.Linear(in_features=expand_size, out_features=expand_size)
-        self.se_1_1 = nn.ReLU(inplace=False)
+        self.se_1_1 = nn.ReLU(inplace=True)
 
         self.se_2_0 = nn.Linear(in_features=expand_size, out_features=expand_size)
-        self.se_2_1 = nn.Hardsigmoid(inplace=False)
+        self.se_2_1 = nn.Hardsigmoid(inplace=True)
 
     def forward(self, x):
         x = self.se_0_0(x)
@@ -61,7 +61,7 @@ class Bottleneck(nn.Module):
         # 1x1 Conv2d + NL
         self.bottleneck_0_0 = nn.Conv2d(in_channels=in_channels, out_channels=expand_size, kernel_size=(1, 1), bias=False)
         self.bottleneck_0_1 = nn.BatchNorm2d(num_features=expand_size)
-        self.bottleneck_0_2 = self.Nonliearity()
+        self.bottleneck_0_2 = self.Nonliearity(inplace=True)
 
         # Dwise + NL
         self.bottleneck_1_0 = nn.Conv2d(in_channels=expand_size, out_channels=expand_size, kernel_size=self.dw_kernel_size,
@@ -111,7 +111,7 @@ class MobileNetV3(nn.Module):
 
         self.conv_0_0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=(3, 3), stride=2, padding=3 // 2, bias=False)
         self.conv_0_1 = nn.BatchNorm2d(num_features=16)
-        self.conv_0_2 = nn.Hardswish()
+        self.conv_0_2 = nn.Hardswish(inplace=True)
 
         self.conv_1_0 = Bottleneck(in_feature_size=112, in_channels=16, out_channels=16, dw_kernel_size=(3, 3),
                                    expand_size=16, squeeze_excite=True, nonlinearity='relu', stride=2)
@@ -137,12 +137,12 @@ class MobileNetV3(nn.Module):
                                    expand_size=576, squeeze_excite=True, nonlinearity='hardswish', stride=1)
 
         self.conv_12_0 = nn.Conv2d(in_channels=96, out_channels=576, kernel_size=(1, 1), bias=False)
-        self.conv_12_1 = nn.Hardswish()
+        self.conv_12_1 = nn.Hardswish(inplace=True)
         self.conv_12_2 = nn.BatchNorm2d(num_features=576)
 
         self.conv_13_0 = nn.AdaptiveAvgPool2d(output_size=1)
         self.conv_14_0 = nn.Conv2d(in_channels=576, out_channels=1024, kernel_size=(1, 1), bias=False)
-        self.conv_14_1 = nn.Hardswish()
+        self.conv_14_1 = nn.Hardswish(inplace=True)
 
         self.conv_15_0 = nn.Conv2d(in_channels=1024, out_channels=out_features, kernel_size=(1, 1), bias=False)
 

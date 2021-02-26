@@ -83,14 +83,16 @@ if __name__ == '__main__':
         MobileNetV3(size='small', out_features=1000),
         torch.nn.Dropout(p=0.8),
         torch.nn.Linear(1000, 1000)
-    ).to(device)
+    )
     # model = MobileNetV3(size='small', out_features=1000).to(device)
 
     if args.continue_weight is not None:
         print("[%s] Loading weight file: %s" % (str(datetime.now()), args.continue_weight))
         model.load_state_dict(torch.load(args.continue_weight))
 
-    criterion = torch.nn.CrossEntropyLoss()
+    model = model.to(device)
+
+    criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.RMSprop(model.parameters(),
                                     lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
 
