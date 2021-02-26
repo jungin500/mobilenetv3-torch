@@ -13,16 +13,13 @@ IMG_CLASS_LIST_PKL_FILENAME = CACHE_BASE_DIR + os.sep + 'img_class_list'
 
 
 class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
-    def __init__(self, labels, root_dir, transform=None, use_cache=True, dataset_usage_pct=1.0, is_cuda=True):
+    def __init__(self, labels, root_dir, device, transform=None, use_cache=True, dataset_usage_pct=1.0):
         super(ILSVRC2012TaskOneTwoDataset, self).__init__()
 
         self.labels = labels
         self.root_dir = root_dir
         self.transform = transform
-        if is_cuda:
-            self.device = torch.device('cuda:0')
-        else:
-            self.device = torch.device('cpu')
+        self.device = device
 
         img_path_list_filename_pct = IMG_PATH_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'
         img_class_list_filename_pct = IMG_CLASS_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'

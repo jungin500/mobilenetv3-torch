@@ -2,3 +2,4 @@
 .annotations/
 __pycache__/
 .idea/
+*.pth
