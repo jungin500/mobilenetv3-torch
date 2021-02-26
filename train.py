@@ -33,6 +33,8 @@ if __name__ == '__main__':
                         help='(Optional) Continue from weight (e.g. ./weight.pth)')
     parser.add_argument('--learning-rate', '-l', type=float, default=0.00625,
                         help='Learning rate (default: 0.00625)')
+    parser.add_argument('--live-validation', default=False, action='store_true',
+                        help='Validate on evey batch ends')
     parser.add_argument('--summary', '-s', default=False, action='store_true',
                         help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
@@ -46,15 +48,16 @@ if __name__ == '__main__':
         labels=labels,
         root_dir=args.root_dir,
         device=device,
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop((224, 224)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ]),
+        # transform disabled due to dataset architecture change
+        # transform=transforms.Compose([
+        #     transforms.RandomResizedCrop((224, 224)),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(
+        #         mean=[0.485, 0.456, 0.406],
+        #         std=[0.229, 0.224, 0.225]
+        #     )
+        # ]),
         use_cache=not args.no_cache,
         dataset_usage_pct=args.dataset_pct
     )
@@ -135,9 +138,32 @@ if __name__ == '__main__':
             optimizer.step()
 
             running_loss += loss.item()
-            # if i % 10 == 9:
-            print(f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
-                  (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
+
+            # Live-valiation
+            if args.live_validation:
+                metric_sums = 0
+                for j, valid_data in enumerate(valid_dataloader):
+                    input, label = valid_data
+
+                    output = model(input)
+                    output = torch.softmax(output, dim=1)
+                    output = torch.argmax(output, dim=1, keepdim=False)
+
+                    diff = (output == label).int()
+                    batch_items = diff.shape[0]
+                    metric = torch.sum(diff) / batch_items
+                    metric = metric.item()
+                    metric_sums += metric
+
+                metric_sums /= (j + 1)
+
+                print(
+                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric))
+            else:
+                print(
+                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
 
         running_loss /= i
 
@@ -148,13 +174,12 @@ if __name__ == '__main__':
         validation_items = 0
         for i, data in enumerate(valid_dataloader):
             input, label = data
+
             output = model(input)
-            output = torch.log_softmax(output, dim=1)
-            output = torch.argmax(output, dim=1, keepdim=True)
+            output = torch.softmax(output, dim=1)
+            output = torch.argmax(output, dim=1, keepdim=False)
 
             diff = (output == label).int()
-            diff = torch.squeeze(diff)
-
             batch_items = diff.shape[0]
             metric = torch.sum(diff)
 
@@ -180,7 +205,11 @@ if __name__ == '__main__':
         # Save better results
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or current_epoch_avg_loss < epoch_avg_loss_prev:
-            torch.save(model.state_dict(), f'mobilenetv3-head-epoch%d-loss%.3f-nextlr%.6f.pth'
+            basepath = '.checkpoints' + os.sep
+            if not os.path.isdir(basepath):
+                os.mkdir(basepath)
+
+            torch.save(model.state_dict(), basepath + 'mobilenetv3-head-epoch%d-loss%.3f-nextlr%.6f.pth'
                        % (epoch, current_epoch_avg_loss, optimizer.param_groups[0]['lr']))
 
         epoch_avg_loss_cumulative += current_epoch_avg_loss

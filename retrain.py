@@ -35,6 +35,8 @@ if __name__ == '__main__':
                         help='(Optional) Continue from weight (e.g. ./weight.pth)')
     parser.add_argument('--learning-rate', '-l', type=float, default=0.00625,
                         help='Learning rate (default: 0.00625)')
+    parser.add_argument('--live-validation', default=False, action='store_true',
+                        help='Validate on evey batch ends')
     parser.add_argument('--summary', '-s', default=False, action='store_true',
                         help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
@@ -62,10 +64,11 @@ if __name__ == '__main__':
     )
 
     trainset_items = math.floor(len(datasets) * 0.9)
-    validset_items = len(datasets) - trainset_items
+    live_validset_items = 64
+    validset_items = len(datasets) - trainset_items - live_validset_items
 
-    train_datasets, valid_datasets = torch.utils.data.random_split(
-        datasets, [trainset_items, validset_items]
+    train_datasets, valid_datasets, live_valid_datasets = torch.utils.data.random_split(
+        datasets, [trainset_items, validset_items, live_validset_items]
     )
 
     train_dataloader = torch.utils.data.DataLoader(train_datasets,
@@ -77,6 +80,13 @@ if __name__ == '__main__':
 
     valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
                                                    batch_size=args.batch_size,
+                                                   shuffle=True,
+                                                   num_workers=0,
+                                                   pin_memory=False
+                                                   )  # do not use num_workers and pin_memory on Windows!
+
+    live_valid_dataloader = torch.utils.data.DataLoader(live_valid_datasets,
+                                                   batch_size=live_validset_items,
                                                    shuffle=True,
                                                    num_workers=0,
                                                    pin_memory=False
@@ -125,11 +135,11 @@ if __name__ == '__main__':
         running_loss = 0
         print("[%s] Begin training sequence" % (str(datetime.now()),))
 
-        next_dataset_timer = 0
+        # next_dataset_timer = 0
         for i, data in enumerate(train_dataloader):
-            if next_dataset_timer != 0:
-                diff = time() - next_dataset_timer
-                print("Took %d seconds!" % (diff,))
+            # if next_dataset_timer != 0:
+            #     diff = time() - next_dataset_timer
+            #     print("Took %.1f seconds!" % (diff,))
 
             input, label = data
 
@@ -148,12 +158,34 @@ if __name__ == '__main__':
             optimizer.step()
 
             running_loss += loss.item()
-            # if i % 10 == 9:
-            print(
-                f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
-                (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
 
-            next_dataset_timer = time()
+            # Live-valiation
+            if args.live_validation:
+                metric_sums = 0
+                for j, valid_data in enumerate(valid_dataloader):
+                    input, label = valid_data
+
+                    output = model(input)
+                    output = torch.softmax(output, dim=1)
+                    output = torch.argmax(output, dim=1, keepdim=False)
+
+                    diff = (output == label).int()
+                    batch_items = diff.shape[0]
+                    metric = torch.sum(diff) / batch_items
+                    metric = metric.item()
+                    metric_sums += metric
+
+                metric_sums /= (j + 1)
+
+                print(
+                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric))
+            else:
+                print(
+                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
+
+            # next_dataset_timer = time()
 
         running_loss /= i
 
@@ -162,22 +194,19 @@ if __name__ == '__main__':
         # Validation time
         validation_accuracy_set = 0
         validation_items = 0
-
         for i, data in enumerate(valid_dataloader):
             input, label = data
+
             output = model(input)
-            output = torch.log_softmax(output, dim=1)
-            output = torch.argmax(output, dim=1, keepdim=True)
+            output = torch.softmax(output, dim=1)
+            output = torch.argmax(output, dim=1, keepdim=False)
 
             diff = (output == label).int()
-            diff = torch.squeeze(diff)
-
             batch_items = diff.shape[0]
             metric = torch.sum(diff)
 
             validation_accuracy_set += metric
             validation_items += batch_items
-
 
         metric = validation_accuracy_set / validation_items
         print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
