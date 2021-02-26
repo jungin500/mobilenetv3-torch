@@ -192,24 +192,25 @@ if __name__ == '__main__':
         print("[%s] Begin valiating sequence" % (str(datetime.now()),))
 
         # Validation time
-        validation_accuracy_set = 0
-        validation_items = 0
-        for i, data in enumerate(valid_dataloader):
-            input, label = data
+        if not args.live_validation:
+            validation_accuracy_set = 0
+            validation_items = 0
+            for i, data in enumerate(valid_dataloader):
+                input, label = data
 
-            output = model(input)
-            output = torch.softmax(output, dim=1)
-            output = torch.argmax(output, dim=1, keepdim=False)
+                output = model(input)
+                output = torch.softmax(output, dim=1)
+                output = torch.argmax(output, dim=1, keepdim=False)
 
-            diff = (output == label).int()
-            batch_items = diff.shape[0]
-            metric = torch.sum(diff)
+                diff = (output == label).int()
+                batch_items = diff.shape[0]
+                metric = torch.sum(diff)
 
-            validation_accuracy_set += metric
-            validation_items += batch_items
+                validation_accuracy_set += metric
+                validation_items += batch_items
 
-        metric = validation_accuracy_set / validation_items
-        print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
+            metric = validation_accuracy_set / validation_items
+            print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
 
         if epoch % 3 == 2:
             for g in optimizer.param_groups:
