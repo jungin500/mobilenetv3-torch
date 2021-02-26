@@ -33,6 +33,8 @@ if __name__ == '__main__':
                         help='(Optional) Continue from weight (e.g. ./weight.pth)')
     parser.add_argument('--learning-rate', '-l', type=float, default=0.00625,
                         help='Learning rate (default: 0.00625)')
+    parser.add_argument('--summary', '-s', default=False, action='store_true',
+                        help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
                         help='Epochs (default: 200)')
     args = parser.parse_args()
@@ -91,7 +93,12 @@ if __name__ == '__main__':
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.RMSprop(model.parameters(),
                                     lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
-    # torchsummary.summary(model, (3, 224, 224))
+
+    if args.summary:
+        gpu = torch.device('cuda:0')
+        model.to(gpu)
+        torchsummary.summary(model, (3, 224, 224))
+        exit(0)
 
     first_batch = True
 

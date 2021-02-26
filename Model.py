@@ -15,10 +15,10 @@ class IdentityModule(nn.Module):
 
 
 class SqueezeExciteModule(nn.Module):
-    def __init__(self, in_feature_size, stride, expand_size):
+    def __init__(self, expand_size):
         super(SqueezeExciteModule, self).__init__()
 
-        self.se_0_0 = nn.AvgPool2d(kernel_size=in_feature_size // stride)
+        self.se_0_0 = nn.AdaptiveAvgPool2d(output_size=1)
         self.se_0_1 = nn.Flatten()
 
         self.se_1_0 = nn.Linear(in_features=expand_size, out_features=expand_size)
@@ -59,34 +59,30 @@ class Bottleneck(nn.Module):
             raise RuntimeError("No such nonlinearity!")
 
         # 1x1 Conv2d + NL
-        self.bottleneck_0_0 = nn.Conv2d(in_channels=in_channels, out_channels=expand_size, kernel_size=(1, 1))
-        self.bottleneck_0_1 = self.Nonliearity()
-        self.bottleneck_0_2 = nn.BatchNorm2d(num_features=expand_size)
+        self.bottleneck_0_0 = nn.Conv2d(in_channels=in_channels, out_channels=expand_size, kernel_size=(1, 1), bias=False)
+        self.bottleneck_0_1 = nn.BatchNorm2d(num_features=expand_size)
+        self.bottleneck_0_2 = self.Nonliearity()
 
         # Dwise + NL
         self.bottleneck_1_0 = nn.Conv2d(in_channels=expand_size, out_channels=expand_size, kernel_size=self.dw_kernel_size,
-                                    stride=self.stride, padding=self.dw_kernel_size[0] // 2)  # TODO: Stride가 2일까 아니면 Padding이 1일까?
-        self.bottleneck_1_1 = nn.Conv2d(in_channels=expand_size, out_channels=expand_size, kernel_size=(1, 1))
-        self.bottleneck_1_2 = self.Nonliearity()
-        self.bottleneck_1_3 = nn.BatchNorm2d(num_features=expand_size)
+                                    stride=self.stride, padding=self.dw_kernel_size[0] // 2, groups=expand_size, bias=False)
+        self.bottleneck_1_1 = nn.BatchNorm2d(num_features=expand_size)
 
         # Squeeze-Excite
         if self.squeeze_excite:
             self.squeeze_excite_0 = SqueezeExciteModule(
-                in_feature_size=in_feature_size,
-                stride=self.stride,
                 expand_size=expand_size
             )
         else:
             self.squeeze_excite_0 = IdentityModule()
 
         # Final 1x1 Conv2d
-        self.bottleneck_final_0 = nn.Conv2d(in_channels=expand_size, out_channels=out_channels, kernel_size=(1, 1))
+        self.bottleneck_final_0 = nn.Conv2d(in_channels=expand_size, out_channels=out_channels, kernel_size=(1, 1), bias=False)
         self.bottleneck_final_1 = nn.BatchNorm2d(num_features=out_channels)
 
         # Downsampling first layer
         self.bottleneck_final_2 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
-                                            kernel_size=(1, 1), stride=self.stride)
+                                            kernel_size=(1, 1), stride=self.stride, bias=False)
 
 
     def forward(self, x):
@@ -96,8 +92,6 @@ class Bottleneck(nn.Module):
 
         x_0 = self.bottleneck_1_0(x_0)
         x_0 = self.bottleneck_1_1(x_0)
-        x_0 = self.bottleneck_1_2(x_0)
-        x_0 = self.bottleneck_1_3(x_0)
 
         x_1 = self.squeeze_excite_0(x_0)
         x_0 = x_0 * x_1
@@ -115,9 +109,9 @@ class MobileNetV3(nn.Module):
         if size != 'small':
             raise RuntimeError("Not implemented except small model")
 
-        self.conv_0_0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=(3, 3), stride=2, padding=3 // 2)
-        self.conv_0_1 = nn.Hardswish()
-        self.conv_0_2 = nn.BatchNorm2d(num_features=16)
+        self.conv_0_0 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=(3, 3), stride=2, padding=3 // 2, bias=False)
+        self.conv_0_1 = nn.BatchNorm2d(num_features=16)
+        self.conv_0_2 = nn.Hardswish()
 
         self.conv_1_0 = Bottleneck(in_feature_size=112, in_channels=16, out_channels=16, dw_kernel_size=(3, 3),
                                    expand_size=16, squeeze_excite=True, nonlinearity='relu', stride=2)
@@ -142,16 +136,15 @@ class MobileNetV3(nn.Module):
         self.conv_11_0 = Bottleneck(in_feature_size=7, in_channels=96, out_channels=96, dw_kernel_size=(5, 5),
                                    expand_size=576, squeeze_excite=True, nonlinearity='hardswish', stride=1)
 
-        self.conv_12_0 = nn.Conv2d(in_channels=96, out_channels=576, kernel_size=(1, 1))
+        self.conv_12_0 = nn.Conv2d(in_channels=96, out_channels=576, kernel_size=(1, 1), bias=False)
         self.conv_12_1 = nn.Hardswish()
         self.conv_12_2 = nn.BatchNorm2d(num_features=576)
 
-        self.conv_13_0 = nn.AvgPool2d(kernel_size=(7, 7))
-
-        self.conv_14_0 = nn.Conv2d(in_channels=576, out_channels=1024, kernel_size=(1, 1))
+        self.conv_13_0 = nn.AdaptiveAvgPool2d(output_size=1)
+        self.conv_14_0 = nn.Conv2d(in_channels=576, out_channels=1024, kernel_size=(1, 1), bias=False)
         self.conv_14_1 = nn.Hardswish()
 
-        self.conv_15_0 = nn.Conv2d(in_channels=1024, out_channels=out_features, kernel_size=(1, 1))
+        self.conv_15_0 = nn.Conv2d(in_channels=1024, out_channels=out_features, kernel_size=(1, 1), bias=False)
 
 
     def forward(self, x):

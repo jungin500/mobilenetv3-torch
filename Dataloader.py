@@ -24,6 +24,8 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         img_path_list_filename_pct = IMG_PATH_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'
         img_class_list_filename_pct = IMG_CLASS_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'
 
+        print(f"데이터셋 중 {int(dataset_usage_pct * 1000) / 10}%를 사용합니다.")
+
         if use_cache and os.path.isfile(img_path_list_filename_pct) and os.path.isfile(img_class_list_filename_pct):
             try:
                 for _ in tqdm(range(1), desc='이미지 파일 리스트 읽기 작업 (Using cache)'):
@@ -56,7 +58,6 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
 
         label_index = 0
         if dataset_usage_pct < 1.0:
-            print(f"데이터셋 중 {int(dataset_usage_pct * 1000) / 10}%를 사용합니다.")
             for label in tqdm(self.labels.keys(), desc='이미지 파일 리스트 부분 읽기 작업'):
                 item_dir = os.path.join(self.root_dir, label)
                 file_list = glob.glob(item_dir + os.sep + "*.JPEG")

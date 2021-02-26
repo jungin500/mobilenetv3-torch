@@ -18,7 +18,7 @@ from pretrained.mobilenetv3 import mobilenetv3
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--label-list', default='label.list',
+    parser.add_argument('--label-list', default='pretrained-label.list',
                         help='label.list (e.g. File filled with lines containing "n03251766|dryer, drier\\n", ...) ')
     parser.add_argument('--root-dir', default=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
                         help=r'Annotation root directory which contains folder (default: S:\ILSVRC2012-CLA-DET\ILSVRC)')
@@ -35,6 +35,8 @@ if __name__ == '__main__':
                         help='(Optional) Continue from weight (e.g. ./weight.pth)')
     parser.add_argument('--learning-rate', '-l', type=float, default=0.00625,
                         help='Learning rate (default: 0.00625)')
+    parser.add_argument('--summary', '-s', default=False, action='store_true',
+                        help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
                         help='Epochs (default: 200)')
     args = parser.parse_args()
@@ -82,19 +84,30 @@ if __name__ == '__main__':
     model = mobilenetv3(pretrained=True,
                         n_class=1000,
                         input_size=224,
-                        dropout=0.8,
+                        dropout=0.0,  # 0.8
                         mode='small',
-                        width_mult=1.0).to(device)
+                        width_mult=1.0)
+
+    for name, param in model.named_parameters():
+        if 'classifier' not in name:
+            param.requires_grad = False
+
     # model = MobileNetV3(size='small', out_features=1000).to(device)
 
     if args.continue_weight is not None:
         print("[%s] Loading weight file: %s" % (str(datetime.now()), args.continue_weight))
         model.load_state_dict(torch.load(args.continue_weight))
 
+    model.to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.RMSprop(model.parameters(),
                                     lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
-    # torchsummary.summary(model, (3, 224, 224))
+
+    if args.summary:
+        gpu = torch.device('cuda:0')
+        model.to(gpu)
+        torchsummary.summary(model, (3, 224, 224))
+        exit(0)
 
     first_batch = True
 
@@ -158,7 +171,7 @@ if __name__ == '__main__':
             validation_items += batch_items
 
         metric = validation_accuracy_set / validation_items
-        print("[%s] Validation score: %.5f" % (str(datetime.now()), metric.numpy()))
+        print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
 
         if epoch % 3 == 2:
             for g in optimizer.param_groups:
@@ -175,7 +188,7 @@ if __name__ == '__main__':
         # Save better results
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or current_epoch_avg_loss < epoch_avg_loss_prev:
-            torch.save(model.state_dict(), f'mobilenetv3-head-epoch%d-loss%.3f-nextlr%.6f.pth'
+            torch.save(model.state_dict(), f'mobilenetv3-retrain-head-epoch%d-loss%.3f-nextlr%.6f.pth'
                        % (epoch, current_epoch_avg_loss, optimizer.param_groups[0]['lr']))
 
         epoch_avg_loss_cumulative += current_epoch_avg_loss
