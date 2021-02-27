@@ -1,18 +1,16 @@
+import math
 import os
-
-import torch
-from torchvision import transforms
 from argparse import ArgumentParser
-
-from Dataloader import ILSVRC2012TaskOneTwoDataset
-from Model import MobileNetV3
-from ILSVRC2012Preprocessor import LabelReader
-
 from datetime import datetime
 from time import time
-import math
+import uuid
 
+import torch
 import torchsummary
+
+from Dataloader import ILSVRC2012TaskOneTwoDataset
+from ILSVRC2012Preprocessor import LabelReader
+from Model import MobileNetV3
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -21,6 +19,10 @@ if __name__ == '__main__':
     parser.add_argument('--root-dir', default=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
                         help=r'Annotation root directory which contains folder (default: S:\ILSVRC2012-CLA-DET\ILSVRC)')
     parser.add_argument('--batch-size', '-b', type=int, default=128, help='Batch size (default: 128)')
+    parser.add_argument('--input-size', '-i', type=int, default=224,
+                        help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
+    parser.add_argument('--width-mult', '-w', type=float, default=1.0,
+                        help='Channel width multiplier (default: 1.0, candidates: 1.0, 0.75, 0.5, 0.25)')
     parser.add_argument('--gpu', '-g', default=False, action='store_true',
                         help='Use GPU to train (Not so useful on debugging)')
     parser.add_argument('--no-cache', default=False, action='store_true',
@@ -42,12 +44,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
+    if not args.gpu:
+        print("WARNING: Using CPU trainer!")
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
     datasets = ILSVRC2012TaskOneTwoDataset(
         labels=labels,
         root_dir=args.root_dir,
         device=device,
+        input_size=args.input_size,
         # transform disabled due to dataset architecture change
         # transform=transforms.Compose([
         #     transforms.RandomResizedCrop((224, 224)),
@@ -70,11 +75,11 @@ if __name__ == '__main__':
     )
 
     train_dataloader = torch.utils.data.DataLoader(train_datasets,
-                                             batch_size=args.batch_size,
-                                             shuffle=True,
-                                             num_workers=0,
-                                             pin_memory=False
-                                             )  # do not use num_workers and pin_memory on Windows!
+                                                   batch_size=args.batch_size,
+                                                   shuffle=True,
+                                                   num_workers=0,
+                                                   pin_memory=False
+                                                   )  # do not use num_workers and pin_memory on Windows!
 
     valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
                                                    batch_size=args.batch_size,
@@ -82,12 +87,17 @@ if __name__ == '__main__':
                                                    num_workers=0,
                                                    pin_memory=False
                                                    )  # do not use num_workers and pin_memory on Windows!
-    model = torch.nn.Sequential(
-        MobileNetV3(size='small', out_features=1000),
+
+    base_model = MobileNetV3(size='small', out_features=1000, width_mult=args.width_mult)
+    classifier = torch.nn.Sequential(
         torch.nn.Dropout(p=0.8),
         torch.nn.Linear(1000, 1000)
     )
-    # model = MobileNetV3(size='small', out_features=1000).to(device)
+
+    model = torch.nn.Sequential(
+        base_model,
+        classifier
+    )
 
     if args.continue_weight is not None:
         print("[%s] Loading weight file: %s" % (str(datetime.now()), args.continue_weight))
@@ -102,31 +112,35 @@ if __name__ == '__main__':
     if args.summary:
         gpu = torch.device('cuda:0')
         model.to(gpu)
-        torchsummary.summary(model, (3, 224, 224))
+        torchsummary.summary(model, (3, 128, 128))
         exit(0)
 
-    first_batch = True
+    # Unique run footprint string (could be UUID)
+    run_footprint = str(uuid.uuid1())
 
+    first_batch = True
     epoch_avg_loss_cumulative = 0
     epoch_avg_loss_prev = None
+    print("[%s] Begin training sequence - initializing dataset (first enumeration)" % (str(datetime.now()),))
     for epoch in range(args.epochs):
 
         if epoch == 0:
-            print("[%s] First Epoch: Warming up epoch" % (str(datetime.now()), ))
+            print("[%s] First Epoch: Warming up epoch" % (str(datetime.now()),))
         elif epoch == 1:
-            print("[%s] Epoch timer began" % (str(datetime.now()), ))
+            print("[%s] Epoch timer began" % (str(datetime.now()),))
             begin_time = time()
 
         # Training time
         running_loss = 0
-        print("[%s] Begin training sequence" % (str(datetime.now()),))
 
         for i, data in enumerate(train_dataloader):
             input, label = data
 
             if first_batch:
+                print("[%s] Dataset initialization complete" % str(datetime.now()))
                 print("[%s] Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
-                      (str(datetime.now()), args.epochs, math.ceil(trainset_items / args.batch_size), args.batch_size, args.learning_rate, args.learning_rate))
+                      (str(datetime.now()), args.epochs, math.ceil(trainset_items / args.batch_size), args.batch_size,
+                       args.learning_rate, args.learning_rate))
                 if args.save_every_epoch:
                     print("[%s] Saving every epochs" % str(datetime.now()))
                 first_batch = False
@@ -159,7 +173,7 @@ if __name__ == '__main__':
 
                 print(
                     f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
-                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric))
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric_sums))
             else:
                 print(
                     f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
@@ -206,11 +220,16 @@ if __name__ == '__main__':
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or current_epoch_avg_loss < epoch_avg_loss_prev:
             basepath = '.checkpoints' + os.sep
+            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%03d-loss%.3f-nextlr%.6f.pth' % \
+                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, current_epoch_avg_loss, optimizer.param_groups[0]['lr'])
+
             if not os.path.isdir(basepath):
                 os.mkdir(basepath)
 
-            torch.save(model.state_dict(), basepath + 'mobilenetv3-head-epoch%d-loss%.3f-nextlr%.6f.pth'
-                       % (epoch, current_epoch_avg_loss, optimizer.param_groups[0]['lr']))
+            print(f'[{str(datetime.now())}]' + '[epoch %03d] saved model to: %s' %
+                  (epoch + 1, savepath))
+
+            torch.save(model.state_dict(), savepath)
 
         epoch_avg_loss_cumulative += current_epoch_avg_loss
         epoch_avg_loss_prev = current_epoch_avg_loss

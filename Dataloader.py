@@ -15,13 +15,14 @@ IMG_CLASS_LIST_PKL_FILENAME = CACHE_BASE_DIR + os.sep + 'img_class_list'
 
 
 class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
-    def __init__(self, labels, root_dir, device, transform=None, use_cache=True, dataset_usage_pct=1.0):
+    def __init__(self, labels, root_dir, device, input_size, transform=None, use_cache=True, dataset_usage_pct=1.0):
         super(ILSVRC2012TaskOneTwoDataset, self).__init__()
 
         self.labels = labels
         self.root_dir = root_dir
         self.transform = transform
         self.device = device
+        self.input_size = input_size
 
         img_path_list_filename_pct = IMG_PATH_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'
         img_class_list_filename_pct = IMG_CLASS_LIST_PKL_FILENAME + '_' + str(dataset_usage_pct) + '.pkl'
@@ -106,9 +107,11 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         # return image, label
 
         # OpenCV version (maximizing GPU extents)
+        if self.transform is not None:
+            raise RuntimeError("Transform Not Supported!")
         image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (224, 224), cv2.INTER_CUBIC)
+        image = cv2.resize(image, (self.input_size, self.input_size), cv2.INTER_CUBIC)
         image = np.transpose(image, [2, 0, 1])
         image = torch.tensor(image, device=self.device, dtype=torch.float) / 255.
         label = torch.tensor(self.img_class_list[idx], device=self.device)
@@ -123,9 +126,10 @@ if __name__ == '__main__':
     datasets = ILSVRC2012TaskOneTwoDataset(
         labels=labels,
         root_dir=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
-        transform=transforms.Compose([
-            transforms.Resize(224),
-            transforms.ToTensor()
-        ]),
+        # transform disabled due to dataset architecture change
+        # transform=transforms.Compose([
+        #     transforms.Resize(224),
+        #     transforms.ToTensor()
+        # ]),
         dataset_usage_pct=0.005
     )

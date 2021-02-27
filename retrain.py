@@ -1,19 +1,15 @@
+import math
 import os
-
-import torch
-from torchvision import transforms
 from argparse import ArgumentParser
-
-from Dataloader import ILSVRC2012TaskOneTwoDataset
-from Model import MobileNetV3
-from ILSVRC2012Preprocessor import LabelReader
-
 from datetime import datetime
 from time import time
-import math
+import uuid
 
+import torch
 import torchsummary
 
+from Dataloader import ILSVRC2012TaskOneTwoDataset
+from ILSVRC2012Preprocessor import LabelReader
 from pretrained.mobilenetv3 import mobilenetv3
 
 if __name__ == '__main__':
@@ -25,6 +21,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', '-b', type=int, default=128, help='Batch size (default: 128)')
     parser.add_argument('--gpu', '-g', default=False, action='store_true',
                         help='Use GPU to train (Not so useful on debugging)')
+    parser.add_argument('--input-size', '-i', type=int, default=224,
+                        help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
     parser.add_argument('--no-cache', default=False, action='store_true',
                         help='Do not use cache while loading image data')
     parser.add_argument('--save-every-epoch', default=False, action='store_true',
@@ -50,6 +48,7 @@ if __name__ == '__main__':
         labels=labels,
         root_dir=args.root_dir,
         device=device,
+        input_size=args.input_size,
         # transform=transforms.Compose([
         #     transforms.RandomResizedCrop((224, 224)),
         #     transforms.RandomHorizontalFlip(),
@@ -86,11 +85,11 @@ if __name__ == '__main__':
                                                    )  # do not use num_workers and pin_memory on Windows!
 
     live_valid_dataloader = torch.utils.data.DataLoader(live_valid_datasets,
-                                                   batch_size=live_validset_items,
-                                                   shuffle=True,
-                                                   num_workers=0,
-                                                   pin_memory=False
-                                                   )  # do not use num_workers and pin_memory on Windows!
+                                                        batch_size=live_validset_items,
+                                                        shuffle=True,
+                                                        num_workers=0,
+                                                        pin_memory=False
+                                                        )  # do not use num_workers and pin_memory on Windows!
     model = mobilenetv3(pretrained=True,
                         n_class=1000,
                         input_size=224,
@@ -121,8 +120,12 @@ if __name__ == '__main__':
 
     first_batch = True
 
+    # Unique run footprint string (could be UUID)
+    run_footprint = str(uuid.uuid1())
+
     epoch_avg_loss_cumulative = 0
     epoch_avg_loss_prev = None
+    print("[%s] Begin training sequence - initializing dataset (first enumeration)" % (str(datetime.now()),))
     for epoch in range(args.epochs):
 
         if epoch == 0:
@@ -133,7 +136,6 @@ if __name__ == '__main__':
 
         # Training time
         running_loss = 0
-        print("[%s] Begin training sequence" % (str(datetime.now()),))
 
         # next_dataset_timer = 0
         for i, data in enumerate(train_dataloader):
@@ -144,6 +146,7 @@ if __name__ == '__main__':
             input, label = data
 
             if first_batch:
+                print("[%s] Dataset initialization complete" % str(datetime.now()))
                 print("[%s] Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
                       (str(datetime.now()), args.epochs, math.ceil(trainset_items / args.batch_size), args.batch_size,
                        args.learning_rate, args.learning_rate))
@@ -179,7 +182,7 @@ if __name__ == '__main__':
 
                 print(
                     f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
-                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric))
+                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric_sums))
             else:
                 print(
                     f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
@@ -227,8 +230,17 @@ if __name__ == '__main__':
         # Save better results
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or current_epoch_avg_loss < epoch_avg_loss_prev:
-            torch.save(model.state_dict(), f'mobilenetv3-retrain-head-epoch%d-loss%.3f-nextlr%.6f.pth'
-                       % (epoch, current_epoch_avg_loss, optimizer.param_groups[0]['lr']))
+            basepath = '.checkpoints' + os.sep
+            savepath = basepath + '%s-mobilenetv3-retrain-epoch%03d-loss%.3f-nextlr%.6f.pth' % \
+                       (run_footprint, epoch + 1, current_epoch_avg_loss, optimizer.param_groups[0]['lr'])
+
+            if not os.path.isdir(basepath):
+                os.mkdir(basepath)
+
+            print(f'[{str(datetime.now())}]' + '[epoch %03d] saved model to: %s' %
+                  (epoch + 1, savepath))
+
+            torch.save(model.state_dict(), savepath)
 
         epoch_avg_loss_cumulative += current_epoch_avg_loss
         epoch_avg_loss_prev = current_epoch_avg_loss
