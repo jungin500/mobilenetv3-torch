@@ -7,8 +7,9 @@ import uuid
 
 import torch
 import torchsummary
+from torchvision import transforms
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset
+from Dataloader import ILSVRC2012TaskOneTwoDataset, HDF5Dataset
 from ILSVRC2012Preprocessor import LabelReader
 from Model import MobileNetV3
 
@@ -23,6 +24,9 @@ if __name__ == '__main__':
                         help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
     parser.add_argument('--width-mult', '-w', type=float, default=1.0,
                         help='Channel width multiplier (default: 1.0, candidates: 1.0, 0.75, 0.5, 0.25)')
+    parser.add_argument('--use-hdf5', default=False, action='store_true',
+                        help='Use HDF5 preprocesed dataset')
+    parser.add_argument('--hdf5-root', help='HDF5 file root directory')
     parser.add_argument('--gpu', '-g', default=False, action='store_true',
                         help='Use GPU to train (Not so useful on debugging)')
     parser.add_argument('--no-cache', default=False, action='store_true',
@@ -43,50 +47,65 @@ if __name__ == '__main__':
                         help='Epochs (default: 200)')
     args = parser.parse_args()
 
+    torch.backends.cudnn.benchmark = True
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
+
     if not args.gpu:
         print("WARNING: Using CPU trainer!")
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
-    datasets = ILSVRC2012TaskOneTwoDataset(
-        labels=labels,
-        root_dir=args.root_dir,
-        device=device,
-        input_size=args.input_size,
-        # transform disabled due to dataset architecture change
-        # transform=transforms.Compose([
-        #     transforms.RandomResizedCrop((224, 224)),
-        #     transforms.RandomHorizontalFlip(),
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(
-        #         mean=[0.485, 0.456, 0.406],
-        #         std=[0.229, 0.224, 0.225]
-        #     )
-        # ]),
-        use_cache=not args.no_cache,
-        dataset_usage_pct=args.dataset_pct
-    )
 
-    trainset_items = math.floor(len(datasets) * 0.9)
-    validset_items = len(datasets) - trainset_items
+    if args.use_hdf5:
+        datasets = HDF5Dataset(
+            root_dir=args.hdf5_root,
+            device=device
+        )
 
-    train_datasets, valid_datasets = torch.utils.data.random_split(
-        datasets, [trainset_items, validset_items]
-    )
+        train_dataloader = datasets
+        valid_dataloader = None
 
-    train_dataloader = torch.utils.data.DataLoader(train_datasets,
-                                                   batch_size=args.batch_size,
-                                                   shuffle=True,
-                                                   num_workers=0,
-                                                   pin_memory=False
-                                                   )  # do not use num_workers and pin_memory on Windows!
+        trainset_items = len(datasets)
 
-    valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
-                                                   batch_size=args.batch_size,
-                                                   shuffle=True,
-                                                   num_workers=0,
-                                                   pin_memory=False
-                                                   )  # do not use num_workers and pin_memory on Windows!
+    else:
+        datasets = ILSVRC2012TaskOneTwoDataset(
+            labels=labels,
+            root_dir=args.root_dir,
+            device=device,
+            input_size=args.input_size,
+            # transform disabled due to dataset architecture change
+            transform=transforms.Compose([
+                transforms.RandomResizedCrop((args.input_size, args.input_size)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ]),
+            use_cache=not args.no_cache,
+            dataset_usage_pct=args.dataset_pct
+        )
+
+        trainset_items = math.floor(len(datasets) * 0.9)
+        validset_items = len(datasets) - trainset_items
+
+        train_datasets, valid_datasets = torch.utils.data.random_split(
+            datasets, [trainset_items, validset_items]
+        )
+
+        train_dataloader = torch.utils.data.DataLoader(train_datasets,
+                                                       batch_size=args.batch_size,
+                                                       shuffle=True,
+                                                       num_workers=0,
+                                                       pin_memory=False
+                                                       )  # do not use num_workers and pin_memory on Windows!
+
+        valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
+                                                       batch_size=args.batch_size,
+                                                       shuffle=True,
+                                                       num_workers=0,
+                                                       pin_memory=False
+                                                       )  # do not use num_workers and pin_memory on Windows!
 
     base_model = MobileNetV3(size='small', out_features=1000, width_mult=args.width_mult)
     classifier = torch.nn.Sequential(
@@ -154,7 +173,7 @@ if __name__ == '__main__':
             running_loss += loss.item()
 
             # Live-valiation
-            if args.live_validation:
+            if valid_dataloader is not None and args.live_validation:
                 metric_sums = 0
                 for j, valid_data in enumerate(valid_dataloader):
                     input, label = valid_data
@@ -184,7 +203,7 @@ if __name__ == '__main__':
         print("[%s] Begin valiating sequence" % (str(datetime.now()),))
 
         # Validation time
-        if not args.live_validation:
+        if valid_dataloader is not None and not args.live_validation:
             validation_accuracy_set = 0
             validation_items = 0
             for i, data in enumerate(valid_dataloader):
@@ -202,7 +221,7 @@ if __name__ == '__main__':
                 validation_items += batch_items
 
             metric = validation_accuracy_set / validation_items
-            print("[%s] Validation score: %.5f" % (str(datetime.now()), metric.numpy()))
+            print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
 
         if epoch % 3 == 2:
             for g in optimizer.param_groups:

@@ -3,6 +3,7 @@ import math
 import os
 import pickle
 
+import h5py
 import torch
 from PIL import Image
 import cv2
@@ -99,24 +100,47 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         # PIL-version (old, took 8secs!)
-        # image = Image.open(self.img_path_list[idx]).convert("RGB")
+        image = Image.open(self.img_path_list[idx]).convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        label = torch.Tensor([self.img_class_list[idx]])
+        image, label = image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
+        return image, label
+
+        # # OpenCV version (maximizing GPU extents)
         # if self.transform is not None:
-        #     image = self.transform(image)
-        # label = torch.Tensor([self.img_class_list[idx]])
-        # image, label = image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
+        #     raise RuntimeError("Transform Not Supported!")
+        # image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # image = cv2.resize(image, (self.input_size, self.input_size), cv2.INTER_CUBIC)
+        # image = np.transpose(image, [2, 0, 1])
+        # image = torch.tensor(image, device=self.device, dtype=torch.float) / 255.
+        # label = torch.tensor(self.img_class_list[idx], device=self.device)
+        #
         # return image, label
 
-        # OpenCV version (maximizing GPU extents)
-        if self.transform is not None:
-            raise RuntimeError("Transform Not Supported!")
-        image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (self.input_size, self.input_size), cv2.INTER_CUBIC)
-        image = np.transpose(image, [2, 0, 1])
-        image = torch.tensor(image, device=self.device, dtype=torch.float) / 255.
-        label = torch.tensor(self.img_class_list[idx], device=self.device)
 
+class HDF5Dataset(torch.utils.data.Dataset):
+    def __init__(self, root_dir, device):
+        super(HDF5Dataset, self).__init__()
+
+        self.root_dir = root_dir
+        self.device = None if device.type == 'cpu' else device
+
+        self.hdf5_file_list = glob.glob(root_dir + os.sep + '*.hdf5')
+
+    def __getitem__(self, index):
+        h5py_data = h5py.File(self.hdf5_file_list[index], 'r')
+        image = torch.from_numpy(h5py_data['images'][...])
+        label = torch.from_numpy(h5py_data['labels'][...])
+        if self.device is not None:
+            image = image.to(self.device)
+            label = label.to(self.device)
         return image, label
+
+    def __len__(self):
+        return len(self.hdf5_file_list)
+
 
 if __name__ == '__main__':
     from ILSVRC2012Preprocessor import LabelReader

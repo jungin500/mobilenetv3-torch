@@ -7,6 +7,7 @@ import uuid
 
 import torch
 import torchsummary
+from torchvision import transforms
 
 from Dataloader import ILSVRC2012TaskOneTwoDataset
 from ILSVRC2012Preprocessor import LabelReader
@@ -49,15 +50,16 @@ if __name__ == '__main__':
         root_dir=args.root_dir,
         device=device,
         input_size=args.input_size,
-        # transform=transforms.Compose([
-        #     transforms.RandomResizedCrop((224, 224)),
-        #     transforms.RandomHorizontalFlip(),
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(
-        #         mean=[0.485, 0.456, 0.406],
-        #         std=[0.229, 0.224, 0.225]
-        #     )
-        # ]),
+        # transform disabled due to dataset architecture change
+        transform=transforms.Compose([
+            transforms.RandomResizedCrop((args.input_size, args.input_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ]),
         use_cache=not args.no_cache,
         dataset_usage_pct=args.dataset_pct
     )
