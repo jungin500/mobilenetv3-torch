@@ -9,7 +9,7 @@ import torch
 import torchsummary
 from torchvision import transforms
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset, HDF5Dataset
+from Dataloader import ILSVRC2012TaskOneTwoDataset, HDF5Dataset, SingleHDF5Dataset
 from ILSVRC2012Preprocessor import LabelReader
 from Model import MobileNetV3
 
@@ -56,15 +56,40 @@ if __name__ == '__main__':
     labels = LabelReader(label_file_path=args.label_list).load_label()
 
     if args.use_hdf5:
-        datasets = HDF5Dataset(
+        # datasets = HDF5Dataset(
+        #     root_dir=args.hdf5_root,
+        #     device=device
+        # )
+
+        vanila_dataset = SingleHDF5Dataset(
             root_dir=args.hdf5_root,
             device=device
         )
 
+        # Debug!
+        from random import randrange
+        from matplotlib import pyplot as plt
+        import numpy as np
+
+        for i in [randrange(0, vanila_dataset.__len__()) for x in range(10)]:
+            image, label = vanila_dataset.__getitem__(i)
+            print(f'{i}th dataset - Label is {label}')
+            plt.imshow(np.transpose(image.cpu().numpy(), (1, 2, 0)))
+            plt.show()
+        exit(0)
+        # Debug End
+
+        datasets = torch.utils.data.DataLoader(vanila_dataset,
+                                   batch_size=args.batch_size,
+                                   shuffle=False,
+                                   num_workers=0,
+                                   pin_memory=False
+                                   )  # do not use num_workers and pin_memory on Windows!
+
         train_dataloader = datasets
         valid_dataloader = None
 
-        trainset_items = len(datasets)
+        trainset_items = len(vanila_dataset)
 
     else:
         datasets = ILSVRC2012TaskOneTwoDataset(

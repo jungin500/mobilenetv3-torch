@@ -99,7 +99,7 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         return len(self.img_path_list)
 
     def __getitem__(self, idx):
-        # PIL-version (old, took 8secs!)
+        # PIL-version
         image = Image.open(self.img_path_list[idx]).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
@@ -107,7 +107,7 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         image, label = image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
         return image, label
 
-        # # OpenCV version (maximizing GPU extents)
+        # # OpenCV version (minimizing CPU usage) ? seconds
         # if self.transform is not None:
         #     raise RuntimeError("Transform Not Supported!")
         # image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
@@ -117,6 +117,18 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         # image = torch.tensor(image, device=self.device, dtype=torch.float) / 255.
         # label = torch.tensor(self.img_class_list[idx], device=self.device)
         #
+        # return image, label
+
+        # # OpenCV version 2 (can support transforms - but extra copy incurs here!) 25 seconds
+        # image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # image = Image.fromarray(image)
+        # if self.transform is not None:
+        #     image = self.transform(image)
+        # if self.device.type != 'cpu':
+        #     image = image.to(self.device)
+        # label = torch.tensor(self.img_class_list[idx], device=self.device)
+        # label = torch.unsqueeze(label, 0)
         # return image, label
 
 
@@ -140,6 +152,29 @@ class HDF5Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.hdf5_file_list)
+
+
+class SingleHDF5Dataset(torch.utils.data.Dataset):
+    def __init__(self, root_dir, device):
+        super(SingleHDF5Dataset, self).__init__()
+
+        self.root_dir = root_dir
+        self.device = None if device.type == 'cpu' else device
+
+        self.h5py_data = h5py.File(glob.glob(root_dir + os.sep + '*.hdf5')[0], 'r')
+        self.h5py_dataset_images = self.h5py_data['images']
+        self.h5py_dataset_labels = self.h5py_data['labels']
+
+    def __getitem__(self, index):
+        image = torch.from_numpy(self.h5py_dataset_images[index])
+        label = torch.from_numpy(self.h5py_dataset_labels[index].astype('int64'))
+        if self.device is not None:
+            image = image.to(self.device)
+            label = label.to(self.device)
+        return image, label
+
+    def __len__(self):
+        return self.h5py_dataset_images.shape[0]
 
 
 if __name__ == '__main__':
