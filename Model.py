@@ -158,6 +158,8 @@ class MobileNetV3(nn.Module):
         self.conv_12_1 = nn.Hardswish(inplace=True)
         self.conv_12_2 = nn.BatchNorm2d(num_features=int(576 * width_mult))
 
+        # self.conv_12_2 output shape: [-1, 576, 4, 4]
+
         self.conv_13_0 = nn.AdaptiveAvgPool2d(output_size=1)
         self.conv_14_0 = nn.Conv2d(in_channels=int(576 * width_mult), out_channels=int(1024 * width_mult),
                                    kernel_size=(1, 1), bias=False)
