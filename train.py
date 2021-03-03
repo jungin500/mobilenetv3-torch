@@ -66,28 +66,37 @@ if __name__ == '__main__':
             device=device
         )
 
-        # Debug!
-        from random import randrange
-        from matplotlib import pyplot as plt
-        import numpy as np
+        vanila_validation_dataset = SingleHDF5Dataset(
+            root_dir=args.hdf5_root + os.sep + 'validset',
+            device=device
+        )
 
-        for i in [randrange(0, vanila_dataset.__len__()) for x in range(10)]:
-            image, label = vanila_dataset.__getitem__(i)
-            print(f'{i}th dataset - Label is {label}')
-            plt.imshow(np.transpose(image.cpu().numpy(), (1, 2, 0)))
-            plt.show()
-        exit(0)
-        # Debug End
+        # # Debug!
+        # from random import randrange
+        # from matplotlib import pyplot as plt
+        # import numpy as np
+        #
+        # for i in [randrange(0, vanila_dataset.__len__()) for x in range(10)]:
+        #     image, label = vanila_dataset.__getitem__(i)
+        #     print(f'{i}th dataset - Label is {label}')
+        #     plt.imshow(np.transpose(image.cpu().numpy(), (1, 2, 0)))
+        #     plt.show()
+        # exit(0)
+        # # Debug End
 
-        datasets = torch.utils.data.DataLoader(vanila_dataset,
+
+        train_dataloader = torch.utils.data.DataLoader(vanila_dataset,
                                    batch_size=args.batch_size,
                                    shuffle=False,
                                    num_workers=0,
                                    pin_memory=False
-                                   )  # do not use num_workers and pin_memory on Windows!
-
-        train_dataloader = datasets
-        valid_dataloader = None
+                                   )
+        valid_dataloader = torch.utils.data.DataLoader(vanila_validation_dataset,
+                                   batch_size=512,
+                                   shuffle=False,
+                                   num_workers=0,
+                                   pin_memory=False
+                                   )
 
         trainset_items = len(vanila_dataset)
 
@@ -142,6 +151,7 @@ if __name__ == '__main__':
         base_model,
         classifier
     )
+    model = torch.nn.DataParallel(model)
 
     if args.continue_weight is not None:
         print("[%s] Loading weight file: %s" % (str(datetime.now()), args.continue_weight))
@@ -199,25 +209,26 @@ if __name__ == '__main__':
 
             # Live-valiation
             if valid_dataloader is not None and args.live_validation:
-                metric_sums = 0
-                for j, valid_data in enumerate(valid_dataloader):
-                    input, label = valid_data
+                with torch.no_grad():
+                    metric_sums = 0
+                    for j, valid_data in enumerate(valid_dataloader):
+                        input, label = valid_data
 
-                    output = model(input)
-                    output = torch.softmax(output, dim=1)
-                    output = torch.argmax(output, dim=1, keepdim=False)
+                        output = model(input)
+                        output = torch.softmax(output, dim=1)
+                        output = torch.argmax(output, dim=1, keepdim=False)
 
-                    diff = (output == label).int()
-                    batch_items = diff.shape[0]
-                    metric = torch.sum(diff) / batch_items
-                    metric = metric.item()
-                    metric_sums += metric
+                        diff = (output == label).int()
+                        batch_items = diff.shape[0]
+                        metric = torch.sum(diff) / batch_items
+                        metric = metric.item()
+                        metric_sums += metric
 
-                metric_sums /= (j + 1)
+                    metric_sums /= (j + 1)
 
-                print(
-                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
-                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric_sums))
+                    print(
+                        f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
+                        (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric_sums))
             else:
                 print(
                     f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
@@ -229,24 +240,25 @@ if __name__ == '__main__':
 
         # Validation time
         if valid_dataloader is not None and not args.live_validation:
-            validation_accuracy_set = 0
-            validation_items = 0
-            for i, data in enumerate(valid_dataloader):
-                input, label = data
+            with torch.no_grad():
+                validation_accuracy_set = 0
+                validation_items = 0
+                for i, data in enumerate(valid_dataloader):
+                    input, label = data
 
-                output = model(input)
-                output = torch.softmax(output, dim=1)
-                output = torch.argmax(output, dim=1, keepdim=False)
+                    output = model(input)
+                    output = torch.softmax(output, dim=1)
+                    output = torch.argmax(output, dim=1, keepdim=False)
 
-                diff = (output == label).int()
-                batch_items = diff.shape[0]
-                metric = torch.sum(diff)
+                    diff = (output == label).int()
+                    batch_items = diff.shape[0]
+                    metric = torch.sum(diff)
 
-                validation_accuracy_set += metric
-                validation_items += batch_items
+                    validation_accuracy_set += metric
+                    validation_items += batch_items
 
-            metric = validation_accuracy_set / validation_items
-            print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
+                metric = validation_accuracy_set / validation_items
+                print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
 
         if epoch % 3 == 2:
             for g in optimizer.param_groups:

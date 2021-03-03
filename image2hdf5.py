@@ -40,7 +40,7 @@ if __name__ == '__main__':
                 std=[0.229, 0.224, 0.225]
             )
         ]),
-        use_cache=True,
+        use_cache=False,
         dataset_usage_pct=args.dataset_pct
     )
 
@@ -59,7 +59,7 @@ if __name__ == '__main__':
     for iteration in range(args.files):
         # Each H5 file is approximately ~1.2GB (not compressed)
         with h5py.File(
-                r'D:\dataset-ilsvrc2012-taskonetwo-20210227-%ditems-compressed-%03d.hdf5' % (
+                r'D:\ilsvrc2012-hdf5\validset\dataset-ilsvrc2012-taskonetwo-20210227-%ditems-compressed-%03d.hdf5' % (
                 dataset_len, iteration),
                 'w') as h5py_file:
 
