@@ -108,7 +108,7 @@ class Bottleneck(nn.Module):
 
 
 class MobileNetV3(nn.Module):
-    def __init__(self, size, out_features, width_mult=1.0):
+    def __init__(self, size, width_mult=1.0):
         super(MobileNetV3, self).__init__()
 
         if size != 'small':
@@ -158,37 +158,26 @@ class MobileNetV3(nn.Module):
         self.conv_12_1 = nn.Hardswish(inplace=True)
         self.conv_12_2 = nn.BatchNorm2d(num_features=int(576 * width_mult))
 
-        self.conv_13_0 = nn.AdaptiveAvgPool2d(output_size=1)
-        self.conv_14_0 = nn.Conv2d(in_channels=int(576 * width_mult), out_channels=int(1024 * width_mult),
-                                   kernel_size=(1, 1), bias=False)
-        self.conv_14_1 = nn.Hardswish(inplace=True)
-
-        self.conv_15_0 = nn.Conv2d(in_channels=int(1024 * width_mult), out_channels=out_features,
-                                   kernel_size=(1, 1), bias=False)
+        self.features = nn.Sequential(
+            self.conv_0_0,
+            self.conv_0_1,
+            self.conv_0_2,
+            self.conv_1_0,
+            self.conv_2_0,
+            self.conv_3_0,
+            self.conv_4_0,
+            self.conv_5_0,
+            self.conv_6_0,
+            self.conv_7_0,
+            self.conv_8_0,
+            self.conv_9_0,
+            self.conv_10_0,
+            self.conv_11_0,
+            self.conv_12_0,
+            self.conv_12_1,
+            self.conv_12_2
+        )
 
     def forward(self, x):
-        x = self.conv_0_0(x)
-        x = self.conv_0_1(x)
-        x = self.conv_0_2(x)
-
-        x = self.conv_1_0(x)
-        x = self.conv_2_0(x)
-        x = self.conv_3_0(x)
-        x = self.conv_4_0(x)
-        x = self.conv_5_0(x)
-        x = self.conv_6_0(x)
-        x = self.conv_7_0(x)
-        x = self.conv_8_0(x)
-        x = self.conv_9_0(x)
-        x = self.conv_10_0(x)
-        x = self.conv_11_0(x)
-        x = self.conv_12_0(x)
-        x = self.conv_12_1(x)
-        x = self.conv_12_2(x)
-        x = self.conv_13_0(x)
-        x = self.conv_14_0(x)
-        x = self.conv_14_1(x)
-        x = self.conv_15_0(x)
-        x = torch.flatten(x, start_dim=1)
-
+        x = self.features(x)
         return x

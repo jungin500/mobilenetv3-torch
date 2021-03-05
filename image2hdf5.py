@@ -6,7 +6,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from time import time
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset
+from Dataset import ImageNet
 from ILSVRC2012Preprocessor import LabelReader
 
 if __name__ == '__main__':
@@ -26,7 +26,7 @@ if __name__ == '__main__':
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
 
-    dataset = ILSVRC2012TaskOneTwoDataset(
+    dataset = ImageNet(
         labels=labels,
         root_dir=args.root_dir,
         device=torch.device('cpu'),

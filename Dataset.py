@@ -15,9 +15,9 @@ IMG_PATH_LIST_PKL_FILENAME = CACHE_BASE_DIR + os.sep + 'img_path_list'
 IMG_CLASS_LIST_PKL_FILENAME = CACHE_BASE_DIR + os.sep + 'img_class_list'
 
 
-class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
+class ImageNet(torch.utils.data.Dataset):
     def __init__(self, labels, root_dir, device, input_size, transform=None, use_cache=True, dataset_usage_pct=1.0):
-        super(ILSVRC2012TaskOneTwoDataset, self).__init__()
+        super(ImageNet, self).__init__()
 
         self.labels = labels
         self.root_dir = root_dir
@@ -103,11 +103,14 @@ class ILSVRC2012TaskOneTwoDataset(torch.utils.data.Dataset):
         image = Image.open(self.img_path_list[idx]).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
-        label = torch.Tensor([self.img_class_list[idx]])
-        image, label = image.to(self.device), label.to(self.device, torch.int64)  # do not use pin_memory on windows!
+        label = torch.Tensor([self.img_class_list[idx]]).type(torch.int64).squeeze(dim=0)
+        if self.device.type != image.device.type:
+            image = image.to(self.device)
+        if self.device.type != label.device.type:
+            label = label.to(self.device)
         return image, label
 
-        # # OpenCV version (minimizing CPU usage) ? seconds
+        # OpenCV version (minimizing CPU usage) ? seconds
         # if self.transform is not None:
         #     raise RuntimeError("Transform Not Supported!")
         # image = cv2.imread(self.img_path_list[idx], cv2.IMREAD_COLOR)
@@ -155,13 +158,17 @@ class HDF5Dataset(torch.utils.data.Dataset):
 
 
 class SingleHDF5Dataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, device):
+    def __init__(self, hdf5_filename, device):
         super(SingleHDF5Dataset, self).__init__()
 
-        self.root_dir = root_dir
+        self.hdf5_filename = hdf5_filename
         self.device = None if device.type == 'cpu' else device
 
-        self.h5py_data = h5py.File(glob.glob(root_dir + os.sep + '*.hdf5')[0], 'r')
+        if not os.path.isfile(hdf5_filename):
+            print("ERROR: SingleHDF5Dataset couldn't read hdf5 file %s!" % hdf5_filename)
+
+        print("Loading HDF5 file %s" % hdf5_filename)
+        self.h5py_data = h5py.File(hdf5_filename, 'r')
         self.h5py_dataset_images = self.h5py_data['images']
         self.h5py_dataset_labels = self.h5py_data['labels']
 
@@ -182,7 +189,7 @@ if __name__ == '__main__':
     from torchvision import transforms
 
     labels = LabelReader(label_file_path='label.list').load_label()
-    datasets = ILSVRC2012TaskOneTwoDataset(
+    datasets = ImageNet(
         labels=labels,
         root_dir=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
         # transform disabled due to dataset architecture change

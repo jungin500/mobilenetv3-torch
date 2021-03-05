@@ -4,7 +4,7 @@ import torch
 from torchvision import transforms
 from argparse import ArgumentParser
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset
+from Dataset import ImageNet
 from Model import MobileNetV3
 from ILSVRC2012Preprocessor import LabelReader
 

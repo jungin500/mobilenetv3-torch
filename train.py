@@ -9,7 +9,7 @@ import torch
 import torchsummary
 from torchvision import transforms
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset, HDF5Dataset, SingleHDF5Dataset
+from Dataset import ImageNet, HDF5Dataset, SingleHDF5Dataset
 from ILSVRC2012Preprocessor import LabelReader
 from Model import MobileNetV3
 
@@ -62,12 +62,12 @@ if __name__ == '__main__':
         # )
 
         vanila_dataset = SingleHDF5Dataset(
-            root_dir=args.hdf5_root,
+            hdf5_filename=args.hdf5_root,
             device=device
         )
 
         vanila_validation_dataset = SingleHDF5Dataset(
-            root_dir=args.hdf5_root + os.sep + 'validset',
+            hdf5_filename=r'D:\ilsvrc2012-hdf5\validset\dataset-ilsvrc2012-taskonetwo-20210227-512items-compressed-000.hdf5',
             device=device
         )
 
@@ -101,12 +101,11 @@ if __name__ == '__main__':
         trainset_items = len(vanila_dataset)
 
     else:
-        datasets = ILSVRC2012TaskOneTwoDataset(
+        datasets = ImageNet(
             labels=labels,
             root_dir=args.root_dir,
-            device=device,
+            device=torch.device('cpu'),
             input_size=args.input_size,
-            # transform disabled due to dataset architecture change
             transform=transforms.Compose([
                 transforms.RandomResizedCrop((args.input_size, args.input_size)),
                 transforms.RandomHorizontalFlip(),
@@ -127,24 +126,40 @@ if __name__ == '__main__':
             datasets, [trainset_items, validset_items]
         )
 
+        # On OneGPU (without DataParallel)
+        # batch_size=64 -> 75sec
+        # batch_size=128 -> 73sec
+        # batch_size=256 -> 72sec
+
+        # On Two GPUs (DataParallel)
+        # batch_size=64 ->  81sec
+        # batch_size=128 -> 72sec
+        # batch_size=256 -> 84sec
+        # batch_size=512 -> 71sec
+        # Disk I/O bottleneck here? none of them?
+
         train_dataloader = torch.utils.data.DataLoader(train_datasets,
                                                        batch_size=args.batch_size,
-                                                       shuffle=True,
-                                                       num_workers=0,
-                                                       pin_memory=False
+                                                       shuffle=False,
+                                                       num_workers=8,
+                                                       pin_memory=True
                                                        )  # do not use num_workers and pin_memory on Windows!
 
         valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
                                                        batch_size=args.batch_size,
-                                                       shuffle=True,
-                                                       num_workers=0,
-                                                       pin_memory=False
+                                                       shuffle=False,
+                                                       num_workers=8,
+                                                       pin_memory=True
                                                        )  # do not use num_workers and pin_memory on Windows!
 
-    base_model = MobileNetV3(size='small', out_features=1000, width_mult=args.width_mult)
+    base_model = MobileNetV3(size='small', width_mult=args.width_mult)
+    out_features = 1000
     classifier = torch.nn.Sequential(
-        torch.nn.Dropout(p=0.8),
-        torch.nn.Linear(1000, 1000)
+        torch.nn.AdaptiveAvgPool2d(output_size=1),
+        torch.nn.Conv2d(in_channels=int(576 * args.width_mult), out_channels=int(1024 * args.width_mult), kernel_size=(1, 1), bias=False),
+        torch.nn.Hardswish(inplace=True),
+        torch.nn.Conv2d(in_channels=int(1024 * args.width_mult), out_channels=out_features, kernel_size=(1, 1), bias=False),  # paper output
+        torch.nn.Dropout(p=0.8)
     )
 
     model = torch.nn.Sequential(
@@ -179,8 +194,6 @@ if __name__ == '__main__':
     for epoch in range(args.epochs):
 
         if epoch == 0:
-            print("[%s] First Epoch: Warming up epoch" % (str(datetime.now()),))
-        elif epoch == 1:
             print("[%s] Epoch timer began" % (str(datetime.now()),))
             begin_time = time()
 
@@ -201,7 +214,10 @@ if __name__ == '__main__':
 
             optimizer.zero_grad()
             output = model(input)
-            loss = criterion(output, label.squeeze())
+            # Because we had to do pin workers!
+            if output.device.type != label.device.type:
+                label = label.to(device)
+            loss = criterion(output.squeeze(), label)
             loss.backward()
             optimizer.step()
 
@@ -218,6 +234,8 @@ if __name__ == '__main__':
                         output = torch.softmax(output, dim=1)
                         output = torch.argmax(output, dim=1, keepdim=False)
 
+                        if output.device.type != label.device.type:
+                            label = label.to(device)
                         diff = (output == label).int()
                         batch_items = diff.shape[0]
                         metric = torch.sum(diff) / batch_items
@@ -227,14 +245,14 @@ if __name__ == '__main__':
                     metric_sums /= (j + 1)
 
                     print(
-                        f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f validation accuracy: %.3f' %
-                        (epoch + 1, i + 1, running_loss / (i + 1), loss.item(), metric_sums))
+                        f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] current batch loss: %.3f validation accuracy: %.3f' %
+                        (epoch + 1, i + 1, loss.item(), metric_sums))
             else:
                 print(
-                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] cumulative loss: %.3f current batch loss: %.3f' %
-                    (epoch + 1, i + 1, running_loss / (i + 1), loss.item()))
+                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] current batch loss: %.3f' %
+                    (epoch + 1, i + 1, loss.item()))
 
-        running_loss /= i
+        running_loss /= (i + 1)
 
         print("[%s] Begin valiating sequence" % (str(datetime.now()),))
 
@@ -250,6 +268,8 @@ if __name__ == '__main__':
                     output = torch.softmax(output, dim=1)
                     output = torch.argmax(output, dim=1, keepdim=False)
 
+                    if output.device.type != label.device.type:
+                        label = label.to(device)
                     diff = (output == label).int()
                     batch_items = diff.shape[0]
                     metric = torch.sum(diff)
@@ -265,7 +285,7 @@ if __name__ == '__main__':
                 g['lr'] = g['lr'] * 0.99
             print("[%s] Updating running rate to %.3f" % (str(datetime.now()), g['lr']))
 
-        if epoch == 1:
+        if epoch == 0:
             end_time = time()
             delay_secs = end_time - begin_time
             print("[%s] One epoch took %d seconds" % (str(datetime.now()), delay_secs))
@@ -285,7 +305,7 @@ if __name__ == '__main__':
             print(f'[{str(datetime.now())}]' + '[epoch %03d] saved model to: %s' %
                   (epoch + 1, savepath))
 
-            torch.save(model.state_dict(), savepath)
+            torch.save(base_model.state_dict(), savepath)
 
         epoch_avg_loss_cumulative += current_epoch_avg_loss
         epoch_avg_loss_prev = current_epoch_avg_loss

@@ -9,7 +9,7 @@ import torch
 import torchsummary
 from torchvision import transforms
 
-from Dataloader import ILSVRC2012TaskOneTwoDataset
+from Dataset import ImageNet
 from ILSVRC2012Preprocessor import LabelReader
 from pretrained.mobilenetv3 import mobilenetv3
 
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
-    datasets = ILSVRC2012TaskOneTwoDataset(
+    datasets = ImageNet(
         labels=labels,
         root_dir=args.root_dir,
         device=device,
