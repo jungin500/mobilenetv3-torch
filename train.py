@@ -143,14 +143,14 @@ if __name__ == '__main__':
                                                        shuffle=False,
                                                        num_workers=8,
                                                        pin_memory=True
-                                                       )  # do not use num_workers and pin_memory on Windows!
+                                                       )
 
         valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
                                                        batch_size=args.batch_size,
                                                        shuffle=False,
                                                        num_workers=8,
                                                        pin_memory=True
-                                                       )  # do not use num_workers and pin_memory on Windows!
+                                                       )
 
     base_model = MobileNetV3(size='small', width_mult=args.width_mult)
     out_features = 1000
