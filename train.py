@@ -153,6 +153,8 @@ if __name__ == '__main__':
 
     # Unique run footprint string (could be UUID)
     run_footprint = str(uuid.uuid1())
+    cpu_device = torch.device('cpu')
+    epoch_print_interval = 2
 
     first_batch = True
     epoch_avg_loss_cumulative = 0
@@ -170,7 +172,6 @@ if __name__ == '__main__':
         for i, data in enumerate(train_dataloader):
             input, label = data
 
-            print("[Iteration %03d]" % i, end='\t')
             if first_batch:
                 print("[%s] Dataset initialization complete" % str(datetime.now()))
                 print("[%s] Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
@@ -195,29 +196,31 @@ if __name__ == '__main__':
             running_loss += loss_val
 
             # Begin debug validation
-            model.eval()
-            output_metric = torch.softmax(output, dim=1)
-            output_metric = torch.argmax(output_metric, dim=1, keepdim=False)
-            diff = (output_metric == label).int()
-            metric = (torch.sum(diff) / output_metric.shape[0])
-            metric = int(metric.item() * 10000) / 100.0
+            if i % epoch_print_interval == 0:
+                model.eval()
+                output_metric = torch.softmax(output, dim=1)
+                output_metric = torch.argmax(output_metric, dim=1, keepdim=False)
+                diff = (output_metric == label).int()
+                metric = (torch.sum(diff) / output_metric.shape[0])
+                metric = int(metric.item() * 10000) / 100.0
 
-            non_zeros_count = torch.sum((torch.zeros_like(output) != output).type(torch.int8))
-            non_zeros_count = non_zeros_count.detach().cpu().numpy() / output_metric.shape[0]
-            print("avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" % (non_zeros_count, metric, loss_val))
-            if metric >= 99.99:
-                print("Metric Overwhelmed! Exciting ...")
-                exit(0)
-            model.train()
+                non_zeros_count = torch.sum((torch.zeros_like(output) != output).type(torch.int8))
+                non_zeros_count = non_zeros_count.detach().cpu().numpy() / output_metric.shape[0]
+                print("[%s][1/2][%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" %
+                      (str(datetime.now()), i, len(train_dataloader), non_zeros_count, metric, loss_val))
+                if metric >= 99.99:
+                    print("Metric Overwhelmed! Exciting ...")
+                    exit(0)
+                model.train()
             # End debug validation
 
         running_loss /= (i + 1)
 
-        print("[%s] Begin valiating sequence" % (str(datetime.now()),))
+        print("[%s][2/2] Validation - generating metric" % (str(datetime.now()), i))
 
         # Validation time
         model.eval()
-        validation_accuracy_set = 0
+        validation_total_acc = 0
         validation_items = 0
         for i, data in enumerate(valid_dataloader):
             input, label = data
@@ -230,13 +233,15 @@ if __name__ == '__main__':
 
             diff = (output == label).int()
             metric = (torch.sum(diff) / output_metric.shape[0])
-            metric = int(metric.item() * 10000) / 100.0
 
-            validation_accuracy_set += metric
+            validation_total_acc += metric
             validation_items += diff.shape[0]
 
-        metric = validation_accuracy_set / validation_items
-        print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
+        metric = validation_total_acc / validation_items
+        metric = metric.to(cpu_device).numpy()
+        metric = int(metric.item() * 10000) / 100.0
+
+        print("[%s][2/2] Validation - score: %.5f" % (str(datetime.now()), metric))
         model.train()
 
         # Check Learning rate after Each epoch
@@ -254,13 +259,13 @@ if __name__ == '__main__':
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
             basepath = '.checkpoints' + os.sep
-            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%03d-loss%.3f-nextlr%.6f.pth' % \
+            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f.pth' % \
                        (run_footprint,  args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'])
 
             if not os.path.isdir(basepath):
                 os.mkdir(basepath)
 
-            print(f'[{str(datetime.now())}]' + '[epoch %03d] saved model to: %s' %
+            print(f'[{str(datetime.now())}]' + '[epoch %04d] saved model to: %s' %
                   (epoch + 1, savepath))
 
             torch.save(base_model.state_dict(), savepath)
@@ -268,7 +273,7 @@ if __name__ == '__main__':
         epoch_avg_loss_cumulative += running_loss
         epoch_avg_loss_prev = running_loss
 
-        print(f'[{str(datetime.now())}]' + '[epoch %03d] current epoch average loss: %.3f' %
+        print(f'[{str(datetime.now())}]' + '[epoch %04d] current epoch average loss: %.3f' %
               (epoch + 1, running_loss))
 
     print("Training success")
