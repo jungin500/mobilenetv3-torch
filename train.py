@@ -12,6 +12,7 @@ from torchvision import transforms
 from Dataset import ImageNet, HDF5Dataset, SingleHDF5Dataset
 from ILSVRC2012Preprocessor import LabelReader
 from Model import MobileNetV3
+from output_logger import OutputLogger
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -44,12 +45,14 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', '-e', default=200, type=int,
                         help='Epochs (default: 200)')
     args = parser.parse_args()
+    
+    logger = OutputLogger()
 
     torch.backends.cudnn.benchmark = True
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
 
     if not args.gpu:
-        print("WARNING: Using CPU trainer!")
+        logger.warning("Using CPU trainer!")
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
 
@@ -135,7 +138,7 @@ if __name__ == '__main__':
     model = torch.nn.DataParallel(model)
 
     if args.continue_weight is not None:
-        print("[%s] Loading weight file: %s" % (str(datetime.now()), args.continue_weight))
+        logger.debug("Loading weight file: %s" % args.continue_weight)
         model.load_state_dict(torch.load(args.continue_weight))
 
     model = model.to(device)
@@ -159,26 +162,26 @@ if __name__ == '__main__':
     first_batch = True
     epoch_avg_loss_cumulative = 0
     epoch_avg_loss_prev = None
-    print("[%s] Begin training sequence - initializing dataset (first enumeration)" % (str(datetime.now()),))
+    logger.debug("Begin training sequence - initializing dataset (first enumeration)")
     for epoch in range(args.epochs):
 
         if epoch == 0:
-            print("[%s] Epoch timer began" % (str(datetime.now()),))
+            logger.info("Epoch timer began")
             begin_time = time()
 
         # Training time
         running_loss = 0
 
+        model.train()
         for i, data in enumerate(train_dataloader):
             input, label = data
 
             if first_batch:
-                print("[%s] Dataset initialization complete" % str(datetime.now()))
-                print("[%s] Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
-                      (str(datetime.now()), args.epochs, len(train_dataloader), args.batch_size,
-                       args.learning_rate, args.learning_rate))
+                logger.info("Dataset initialization complete")
+                logger.info("Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
+                      (args.epochs, len(train_dataloader), args.batch_size, args.learning_rate, args.learning_rate))
                 if args.save_every_epoch:
-                    print("[%s] Saving every epochs" % str(datetime.now()))
+                    logger.debug("Saving every epochs")
                 first_batch = False
 
             optimizer.zero_grad()
@@ -206,17 +209,27 @@ if __name__ == '__main__':
 
                 non_zeros_count = torch.sum((torch.zeros_like(output) != output).type(torch.int8))
                 non_zeros_count = non_zeros_count.detach().cpu().numpy() / output_metric.shape[0]
-                print("[%s][1/2][%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" %
-                      (str(datetime.now()), i, len(train_dataloader), non_zeros_count, metric, loss_val))
+                logger.info("[EP:%04d/%04d][1/2][BA:%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" %
+                      (epoch + 1, args.epochs, i, len(train_dataloader), non_zeros_count, metric, loss_val))
                 if metric >= 99.99:
-                    print("Metric Overwhelmed! Exciting ...")
+                    basepath = '.checkpoints' + os.sep
+                    savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
+                               (run_footprint, args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+
+                    if not os.path.isdir(basepath):
+                        os.mkdir(basepath)
+
+                    torch.save(base_model.state_dict(), savepath)
+                    logger.info("Metric Overwhelmed! Saved model to %s and Exciting ..." % savepath)
                     exit(0)
                 model.train()
             # End debug validation
 
+            # One-epoch training end
+
         running_loss /= (i + 1)
 
-        print("[%s][2/2] Validation - generating metric" % (str(datetime.now()), i))
+        logger.info("[EP:%04d/%04d][2/2] Validation - generating metric" % (epoch + 1, args.epochs))
 
         # Validation time
         model.eval()
@@ -241,39 +254,37 @@ if __name__ == '__main__':
         metric = metric.to(cpu_device).numpy()
         metric = int(metric.item() * 10000) / 100.0
 
-        print("[%s][2/2] Validation - score: %.5f" % (str(datetime.now()), metric))
+        logger.info("[EP:%04d/%04d][2/2] Validation - score: %.5f" % (epoch + 1, args.epochs, metric))
         model.train()
 
         # Check Learning rate after Each epoch
         if epoch % 45 == 0 and epoch != 0:
             for g in optimizer.param_groups:
                 g['lr'] = g['lr'] * 0.92
-            print("[%s] Updating running rate to %.3f" % (str(datetime.now()), g['lr']))
+            logger.info("[EP:%04d/%04d] Updating running rate to %.3f" % (epoch + 1, args.epochs, g['lr']))
 
         if epoch == 0:
             end_time = time()
             delay_secs = end_time - begin_time
-            print("[%s] One epoch took %d seconds" % (str(datetime.now()), delay_secs))
+            logger.info("[EP:%04d/%04d] One epoch took %d seconds" % (epoch + 1, args.epochs, delay_secs))
 
         # Save better results
         if args.save_every_epoch or \
                 epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
             basepath = '.checkpoints' + os.sep
-            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f.pth' % \
-                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'])
+            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f-acc%.6f.pth' % \
+                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
 
             if not os.path.isdir(basepath):
                 os.mkdir(basepath)
 
-            print(f'[{str(datetime.now())}]' + '[epoch %04d] saved model to: %s' %
-                  (epoch + 1, savepath))
-
             torch.save(base_model.state_dict(), savepath)
+            logger.warning('Model saved to: %s' % savepath)
 
         epoch_avg_loss_cumulative += running_loss
         epoch_avg_loss_prev = running_loss
 
-        print(f'[{str(datetime.now())}]' + '[epoch %04d] current epoch average loss: %.3f' %
+        logger.info(f'[{str(datetime.now())}]' + '[epoch %04d] current epoch average loss: %.3f' %
               (epoch + 1, running_loss))
 
-    print("Training success")
+    logger.info("Training success")
