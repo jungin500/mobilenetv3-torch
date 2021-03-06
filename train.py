@@ -23,6 +23,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', '-b', type=int, default=128, help='Batch size (default: 128)')
     parser.add_argument('--input-size', '-i', type=int, default=224,
                         help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
+    parser.add_argument('--num-workers', type=int, default=16,
+                        help='Number of dataset workers (default: 16)')
     parser.add_argument('--width-mult', '-w', type=float, default=1.0,
                         help='Channel width multiplier (default: 1.0, candidates: 1.0, 0.75, 0.5, 0.25)')
     parser.add_argument('--use-hdf5', default=False, action='store_true',
@@ -32,6 +34,8 @@ if __name__ == '__main__':
                         help='Use GPU to train (Not so useful on debugging)')
     parser.add_argument('--no-cache', default=False, action='store_true',
                         help='Do not use cache while loading image data')
+    parser.add_argument('--fast-debug', default=False, action='store_true',
+                        help='Minimizing overheads (Disables validation and model saving features)')
     parser.add_argument('--save-every-epoch', default=False, action='store_true',
                         help='Save every epochs weight even if loss conditions are not met')
     parser.add_argument('--dataset-pct', '-p', type=float, default=1.0,
@@ -45,14 +49,16 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', '-e', default=200, type=int,
                         help='Epochs (default: 200)')
     args = parser.parse_args()
-    
-    logger = OutputLogger()
+
+    # Unique run footprint string (could be UUID)
+    run_uuid = str(uuid.uuid1())
+    logger = OutputLogger(run_uuid)
 
     torch.backends.cudnn.benchmark = True
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
 
     if not args.gpu:
-        logger.warning("Using CPU trainer!")
+        logger.info("Using CPU trainer!")
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
 
@@ -96,7 +102,7 @@ if __name__ == '__main__':
     train_dataloader = torch.utils.data.DataLoader(train_datasets,
                                                    batch_size=args.batch_size,
                                                    shuffle=True,
-                                                   num_workers=8,
+                                                   num_workers=args.num_workers,
                                                    pin_memory=True,
                                                    drop_last=True
                                                    )
@@ -104,7 +110,7 @@ if __name__ == '__main__':
     valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
                                                    batch_size=args.batch_size,
                                                    shuffle=True,
-                                                   num_workers=8,
+                                                   num_workers=args.num_workers,
                                                    pin_memory=True,
                                                    drop_last=True
                                                    )
@@ -119,7 +125,7 @@ if __name__ == '__main__':
         # torch.nn.Conv2d(in_channels=int(1024 * args.width_mult), out_channels=out_features, kernel_size=(1, 1), bias=False),  # paper output
         torch.nn.Flatten(start_dim=1),
         torch.nn.Linear(int(576 * args.width_mult), int(1024 * args.width_mult)),
-        # torch.nn.Dropout(p=0.2),  # paper=0.8 but acc only achieves 10%
+        torch.nn.Dropout(p=0.2),  # paper=0.8 but acc only achieves 10%
         torch.nn.Linear(int(1024 * args.width_mult), out_features)
     )
 
@@ -138,7 +144,7 @@ if __name__ == '__main__':
     model = torch.nn.DataParallel(model)
 
     if args.continue_weight is not None:
-        logger.debug("Loading weight file: %s" % args.continue_weight)
+        logger.info("Loading weight file: %s" % args.continue_weight)
         model.load_state_dict(torch.load(args.continue_weight))
 
     model = model.to(device)
@@ -154,15 +160,13 @@ if __name__ == '__main__':
         torchsummary.summary(model, (3, 128, 128))
         exit(0)
 
-    # Unique run footprint string (could be UUID)
-    run_footprint = str(uuid.uuid1())
     cpu_device = torch.device('cpu')
-    epoch_print_interval = 2
+    epoch_print_interval = 100
 
-    first_batch = True
+    first_epoch = True
     epoch_avg_loss_cumulative = 0
     epoch_avg_loss_prev = None
-    logger.debug("Begin training sequence - initializing dataset (first enumeration)")
+    logger.info("Begin training sequence - initializing dataset (first enumeration)")
     for epoch in range(args.epochs):
 
         if epoch == 0:
@@ -170,19 +174,22 @@ if __name__ == '__main__':
             begin_time = time()
 
         # Training time
-        running_loss = 0
+        running_loss = torch.tensor(0.0, device=device)
+        running_metric = 0
 
         model.train()
         for i, data in enumerate(train_dataloader):
+            if i == 0:
+                logger.info("[EP:%04d/%04d][1/2][BA:----/%04d] Begin one epoch" % (epoch + 1, args.epochs, len(train_dataloader)))
+
             input, label = data
 
-            if first_batch:
+            if first_epoch and i == 0:
                 logger.info("Dataset initialization complete")
                 logger.info("Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
                       (args.epochs, len(train_dataloader), args.batch_size, args.learning_rate, args.learning_rate))
                 if args.save_every_epoch:
-                    logger.debug("Saving every epochs")
-                first_batch = False
+                    logger.info("Saving every epochs")
 
             optimizer.zero_grad()
             output = model(input)
@@ -193,28 +200,30 @@ if __name__ == '__main__':
             loss = criterion(output, label)
             loss.backward()  # if - loss is 6.907756328582764, then output might be all-zeros.
             optimizer.step()
-
-            loss_val = loss.item()
-
-            running_loss += loss_val
+            running_loss += loss.item()
 
             # Begin debug validation
-            if i % epoch_print_interval == 0:
+            if args.fast_debug or \
+                    (i == 0 or i % epoch_print_interval == (epoch_print_interval - 1)):
                 model.eval()
                 output_metric = torch.softmax(output, dim=1)
                 output_metric = torch.argmax(output_metric, dim=1, keepdim=False)
                 diff = (output_metric == label).int()
                 metric = (torch.sum(diff) / output_metric.shape[0])
-                metric = int(metric.item() * 10000) / 100.0
 
                 non_zeros_count = torch.sum((torch.zeros_like(output) != output).type(torch.int8))
                 non_zeros_count = non_zeros_count.detach().cpu().numpy() / output_metric.shape[0]
+
+                metric = metric.to(cpu_device).numpy()
+                metric = int(metric.item() * 10000) / 100.0
+                running_metric += metric
+
                 logger.info("[EP:%04d/%04d][1/2][BA:%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" %
-                      (epoch + 1, args.epochs, i, len(train_dataloader), non_zeros_count, metric, loss_val))
+                      (epoch + 1, args.epochs, i + 1, len(train_dataloader), non_zeros_count, metric, loss.item()))
                 if metric >= 99.99:
                     basepath = '.checkpoints' + os.sep
-                    savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
-                               (run_footprint, args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                    savepath = basepath + '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
+                               (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
 
                     if not os.path.isdir(basepath):
                         os.mkdir(basepath)
@@ -224,38 +233,41 @@ if __name__ == '__main__':
                     exit(0)
                 model.train()
             # End debug validation
-
             # One-epoch training end
 
         running_loss /= (i + 1)
-
-        logger.info("[EP:%04d/%04d][2/2] Validation - generating metric" % (epoch + 1, args.epochs))
+        running_metric /= (i + 1)
 
         # Validation time
-        model.eval()
-        validation_total_acc = 0
-        validation_items = 0
-        for i, data in enumerate(valid_dataloader):
-            input, label = data
+        if args.fast_debug:
+            logger.info("[EP:%04d/%04d][2/2] Skipping validation" % (epoch + 1, args.epochs))
+        else:
+            logger.info("[EP:%04d/%04d][2/2] Validation - generating metric" % (epoch + 1, args.epochs))
+            model.eval()
+            validation_total_acc = 0
+            validation_items = 0
+            for i, data in enumerate(valid_dataloader):
+                input, label = data
 
-            output = model(input)
-            output = torch.softmax(output, dim=1)
-            output = torch.argmax(output, dim=1, keepdim=False)
-            if output.device.type != label.device.type:
-                label = label.to(device)
+                output = model(input)
+                output = torch.softmax(output, dim=1)
+                output = torch.argmax(output, dim=1, keepdim=False)
+                if output.device.type != label.device.type:
+                    label = label.to(device)
 
-            diff = (output == label).int()
-            metric = (torch.sum(diff) / output_metric.shape[0])
+                diff = (output == label).int()
+                metric = (torch.sum(diff) / output_metric.shape[0])
 
-            validation_total_acc += metric
-            validation_items += diff.shape[0]
+                validation_total_acc += metric
+                validation_items += diff.shape[0]
 
-        metric = validation_total_acc / validation_items
-        metric = metric.to(cpu_device).numpy()
-        metric = int(metric.item() * 10000) / 100.0
+            metric = validation_total_acc / validation_items
+            metric = metric.to(cpu_device).numpy()
+            metric = int(metric.item() * 10000) / 100.0
 
-        logger.info("[EP:%04d/%04d][2/2] Validation - score: %.5f" % (epoch + 1, args.epochs, metric))
-        model.train()
+            logger.info("[EP:%04d/%04d][2/2] Validation - score: %.5f" % (epoch + 1, args.epochs, metric))
+            model.train()
+
 
         # Check Learning rate after Each epoch
         if epoch % 45 == 0 and epoch != 0:
@@ -269,22 +281,25 @@ if __name__ == '__main__':
             logger.info("[EP:%04d/%04d] One epoch took %d seconds" % (epoch + 1, args.epochs, delay_secs))
 
         # Save better results
-        if args.save_every_epoch or \
-                epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
-            basepath = '.checkpoints' + os.sep
-            savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f-acc%.6f.pth' % \
-                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+        if not args.fast_debug:
+            if args.save_every_epoch or \
+                    epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
+                basepath = '.checkpoints' + os.sep
+                savepath = basepath + '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
+                           (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
 
-            if not os.path.isdir(basepath):
-                os.mkdir(basepath)
+                if not os.path.isdir(basepath):
+                    os.mkdir(basepath)
 
-            torch.save(base_model.state_dict(), savepath)
-            logger.warning('Model saved to: %s' % savepath)
+                torch.save(base_model.state_dict(), savepath)
+                logger.info('Model saved to: %s' % savepath)
 
         epoch_avg_loss_cumulative += running_loss
         epoch_avg_loss_prev = running_loss
 
-        logger.info(f'[{str(datetime.now())}]' + '[epoch %04d] current epoch average loss: %.3f' %
-              (epoch + 1, running_loss))
+        logger.info('[EP:%04d/%04d] Average loss: %.3f\tAverage accuracy (Trainset): %.1f%%' % (epoch + 1, args.epochs, running_loss, running_metric))
+
+        if first_epoch:
+            first_epoch = False
 
     logger.info("Training success")

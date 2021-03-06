@@ -73,3 +73,5 @@
     ```
   - Loss doesn't shrink after 10~ epochs, minimum 4.058 and rises to ~4.345
     
+- Trial 02: Trial 01 + `Dropout=0.2`
+  - Begin: 210307 06:00 (oh, morning ...)

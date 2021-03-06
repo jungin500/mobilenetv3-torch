@@ -35,12 +35,16 @@ class BC:
 
 
 class OutputLogger(object):
-    def __init__(self):
+    def __init__(self, run_uuid):
         self.writer = open('latest.log', 'a')
         self.print = print
         self.sep = '\n'
+        self.run_uuid = run_uuid
+
+        self.__write__('** Training %s Started **' % self.run_uuid)
 
     def __del__(self):
+        self.__write__('** Training %s End **' % self.run_uuid)
         self.writer.flush()
         self.writer.close()
 
@@ -49,7 +53,7 @@ class OutputLogger(object):
 
         self.writer.write(escape(real_data))
         self.writer.flush()  # I/O-slow but accurate
-        self.print('[%s]\t%s' % (now(), real_data))
+        self.print('[%s]\t%s' % (now(), real_data), end='')
 
     def info(self, *args):
         self.__write__(*args)
