@@ -39,8 +39,6 @@ if __name__ == '__main__':
                         help='(Optional) Continue from weight (e.g. ./weight.pth)')
     parser.add_argument('--learning-rate', '-l', type=float, default=0.00625,
                         help='Learning rate (default: 0.00625)')
-    parser.add_argument('--live-validation', default=False, action='store_true',
-                        help='Validate on evey batch ends')
     parser.add_argument('--summary', '-s', default=False, action='store_true',
                         help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
@@ -55,117 +53,85 @@ if __name__ == '__main__':
 
     labels = LabelReader(label_file_path=args.label_list).load_label()
 
-    if args.use_hdf5:
-        # datasets = HDF5Dataset(
-        #     root_dir=args.hdf5_root,
-        #     device=device
-        # )
+    datasets = ImageNet(
+        labels=labels,
+        root_dir=args.root_dir,
+        device=torch.device('cpu'),
+        input_size=args.input_size,
+        transform=transforms.Compose([
+            transforms.RandomResizedCrop((args.input_size, args.input_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ]),
+        use_cache=not args.no_cache,
+        dataset_usage_pct=args.dataset_pct
+    )
 
-        vanila_dataset = SingleHDF5Dataset(
-            hdf5_filename=args.hdf5_root,
-            device=device
-        )
+    validset_items = args.batch_size * 1  # one-batch only
+    trainset_items = len(datasets) - validset_items
 
-        vanila_validation_dataset = SingleHDF5Dataset(
-            hdf5_filename=r'D:\ilsvrc2012-hdf5\validset\dataset-ilsvrc2012-taskonetwo-20210227-512items-compressed-000.hdf5',
-            device=device
-        )
+    train_datasets, valid_datasets = torch.utils.data.random_split(
+        datasets, [trainset_items, validset_items]
+    )
 
-        # # Debug!
-        # from random import randrange
-        # from matplotlib import pyplot as plt
-        # import numpy as np
-        #
-        # for i in [randrange(0, vanila_dataset.__len__()) for x in range(10)]:
-        #     image, label = vanila_dataset.__getitem__(i)
-        #     print(f'{i}th dataset - Label is {label}')
-        #     plt.imshow(np.transpose(image.cpu().numpy(), (1, 2, 0)))
-        #     plt.show()
-        # exit(0)
-        # # Debug End
+    # On OneGPU (without DataParallel)
+    # batch_size=64 -> 75sec
+    # batch_size=128 -> 73sec
+    # batch_size=256 -> 72sec
 
+    # On Two GPUs (DataParallel)
+    # batch_size=64 ->  81sec
+    # batch_size=128 -> 72sec
+    # batch_size=256 -> 84sec
+    # batch_size=512 -> 71sec
+    # Disk I/O bottleneck here? none of them?
 
-        train_dataloader = torch.utils.data.DataLoader(vanila_dataset,
-                                   batch_size=args.batch_size,
-                                   shuffle=False,
-                                   num_workers=0,
-                                   pin_memory=False
-                                   )
-        valid_dataloader = torch.utils.data.DataLoader(vanila_validation_dataset,
-                                   batch_size=512,
-                                   shuffle=False,
-                                   num_workers=0,
-                                   pin_memory=False
-                                   )
+    train_dataloader = torch.utils.data.DataLoader(train_datasets,
+                                                   batch_size=args.batch_size,
+                                                   shuffle=True,
+                                                   num_workers=8,
+                                                   pin_memory=True,
+                                                   drop_last=True
+                                                   )
 
-        trainset_items = len(vanila_dataset)
+    valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
+                                                   batch_size=args.batch_size,
+                                                   shuffle=True,
+                                                   num_workers=8,
+                                                   pin_memory=True,
+                                                   drop_last=True
+                                                   )
 
-    else:
-        datasets = ImageNet(
-            labels=labels,
-            root_dir=args.root_dir,
-            device=torch.device('cpu'),
-            input_size=args.input_size,
-            transform=transforms.Compose([
-                transforms.RandomResizedCrop((args.input_size, args.input_size)),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
-            ]),
-            use_cache=not args.no_cache,
-            dataset_usage_pct=args.dataset_pct
-        )
-
-        trainset_items = math.floor(len(datasets) * 0.9)
-        validset_items = len(datasets) - trainset_items
-
-        train_datasets, valid_datasets = torch.utils.data.random_split(
-            datasets, [trainset_items, validset_items]
-        )
-
-        # On OneGPU (without DataParallel)
-        # batch_size=64 -> 75sec
-        # batch_size=128 -> 73sec
-        # batch_size=256 -> 72sec
-
-        # On Two GPUs (DataParallel)
-        # batch_size=64 ->  81sec
-        # batch_size=128 -> 72sec
-        # batch_size=256 -> 84sec
-        # batch_size=512 -> 71sec
-        # Disk I/O bottleneck here? none of them?
-
-        train_dataloader = torch.utils.data.DataLoader(train_datasets,
-                                                       batch_size=args.batch_size,
-                                                       shuffle=False,
-                                                       num_workers=8,
-                                                       pin_memory=True
-                                                       )
-
-        valid_dataloader = torch.utils.data.DataLoader(valid_datasets,
-                                                       batch_size=args.batch_size,
-                                                       shuffle=False,
-                                                       num_workers=8,
-                                                       pin_memory=True
-                                                       )
 
     base_model = MobileNetV3(size='small', width_mult=args.width_mult)
     out_features = 1000
     classifier = torch.nn.Sequential(
         torch.nn.AdaptiveAvgPool2d(output_size=1),
-        torch.nn.Conv2d(in_channels=int(576 * args.width_mult), out_channels=int(1024 * args.width_mult), kernel_size=(1, 1), bias=False),
-        torch.nn.Hardswish(inplace=True),
-        torch.nn.Conv2d(in_channels=int(1024 * args.width_mult), out_channels=out_features, kernel_size=(1, 1), bias=False),  # paper output
-        torch.nn.Dropout(p=0.8)
+        # torch.nn.Conv2d(in_channels=int(576 * args.width_mult), out_channels=int(1024 * args.width_mult), kernel_size=(1, 1), bias=False),
+        # torch.nn.Hardswish(inplace=True),
+        # torch.nn.Conv2d(in_channels=int(1024 * args.width_mult), out_channels=out_features, kernel_size=(1, 1), bias=False),  # paper output
+        torch.nn.Flatten(start_dim=1),
+        torch.nn.Linear(int(576 * args.width_mult), int(1024 * args.width_mult)),
+        # torch.nn.Dropout(p=0.2),  # paper=0.8 but acc only achieves 10%
+        torch.nn.Linear(int(1024 * args.width_mult), out_features)
     )
 
     model = torch.nn.Sequential(
         base_model,
         classifier
     )
+
+    def xavier_init(m):
+        if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+
+    model.apply(xavier_init)
     model = torch.nn.DataParallel(model)
 
     if args.continue_weight is not None:
@@ -175,8 +141,9 @@ if __name__ == '__main__':
     model = model.to(device)
 
     criterion = torch.nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.RMSprop(model.parameters(),
-                                    lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
+    # optimizer = torch.optim.RMSprop(model.parameters(),
+    #                                 lr=args.learning_rate, momentum=1e-5, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if args.summary:
         gpu = torch.device('cuda:0')
@@ -203,10 +170,11 @@ if __name__ == '__main__':
         for i, data in enumerate(train_dataloader):
             input, label = data
 
+            print("[Iteration %03d]" % i, end='\t')
             if first_batch:
                 print("[%s] Dataset initialization complete" % str(datetime.now()))
                 print("[%s] Begin Training, %d epoches, each %d batches (batch size %d), learning rate %.0e(%.6f)" %
-                      (str(datetime.now()), args.epochs, math.ceil(trainset_items / args.batch_size), args.batch_size,
+                      (str(datetime.now()), args.epochs, len(train_dataloader), args.batch_size,
                        args.learning_rate, args.learning_rate))
                 if args.save_every_epoch:
                     print("[%s] Saving every epochs" % str(datetime.now()))
@@ -217,72 +185,64 @@ if __name__ == '__main__':
             # Because we had to do pin workers!
             if output.device.type != label.device.type:
                 label = label.to(device)
-            loss = criterion(output.squeeze(), label)
-            loss.backward()
+
+            loss = criterion(output, label)
+            loss.backward()  # if - loss is 6.907756328582764, then output might be all-zeros.
             optimizer.step()
 
-            running_loss += loss.item()
+            loss_val = loss.item()
 
-            # Live-valiation
-            if valid_dataloader is not None and args.live_validation:
-                with torch.no_grad():
-                    metric_sums = 0
-                    for j, valid_data in enumerate(valid_dataloader):
-                        input, label = valid_data
+            running_loss += loss_val
 
-                        output = model(input)
-                        output = torch.softmax(output, dim=1)
-                        output = torch.argmax(output, dim=1, keepdim=False)
+            # Begin debug validation
+            model.eval()
+            output_metric = torch.softmax(output, dim=1)
+            output_metric = torch.argmax(output_metric, dim=1, keepdim=False)
+            diff = (output_metric == label).int()
+            metric = (torch.sum(diff) / output_metric.shape[0])
+            metric = int(metric.item() * 10000) / 100.0
 
-                        if output.device.type != label.device.type:
-                            label = label.to(device)
-                        diff = (output == label).int()
-                        batch_items = diff.shape[0]
-                        metric = torch.sum(diff) / batch_items
-                        metric = metric.item()
-                        metric_sums += metric
-
-                    metric_sums /= (j + 1)
-
-                    print(
-                        f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] current batch loss: %.3f validation accuracy: %.3f' %
-                        (epoch + 1, i + 1, loss.item(), metric_sums))
-            else:
-                print(
-                    f'[{str(datetime.now())}]' + '[epoch %03d, batch %03d] current batch loss: %.3f' %
-                    (epoch + 1, i + 1, loss.item()))
+            non_zeros_count = torch.sum((torch.zeros_like(output) != output).type(torch.int8))
+            non_zeros_count = non_zeros_count.detach().cpu().numpy() / output_metric.shape[0]
+            print("avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" % (non_zeros_count, metric, loss_val))
+            if metric >= 99.99:
+                print("Metric Overwhelmed! Exciting ...")
+                exit(0)
+            model.train()
+            # End debug validation
 
         running_loss /= (i + 1)
 
         print("[%s] Begin valiating sequence" % (str(datetime.now()),))
 
         # Validation time
-        if valid_dataloader is not None and not args.live_validation:
-            with torch.no_grad():
-                validation_accuracy_set = 0
-                validation_items = 0
-                for i, data in enumerate(valid_dataloader):
-                    input, label = data
+        model.eval()
+        validation_accuracy_set = 0
+        validation_items = 0
+        for i, data in enumerate(valid_dataloader):
+            input, label = data
 
-                    output = model(input)
-                    output = torch.softmax(output, dim=1)
-                    output = torch.argmax(output, dim=1, keepdim=False)
+            output = model(input)
+            output = torch.softmax(output, dim=1)
+            output = torch.argmax(output, dim=1, keepdim=False)
+            if output.device.type != label.device.type:
+                label = label.to(device)
 
-                    if output.device.type != label.device.type:
-                        label = label.to(device)
-                    diff = (output == label).int()
-                    batch_items = diff.shape[0]
-                    metric = torch.sum(diff)
+            diff = (output == label).int()
+            metric = (torch.sum(diff) / output_metric.shape[0])
+            metric = int(metric.item() * 10000) / 100.0
 
-                    validation_accuracy_set += metric
-                    validation_items += batch_items
+            validation_accuracy_set += metric
+            validation_items += diff.shape[0]
 
-                metric = validation_accuracy_set / validation_items
-                print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
+        metric = validation_accuracy_set / validation_items
+        print("[%s] Validation score: %.5f" % (str(datetime.now()), float(metric.cpu().numpy())))
+        model.train()
 
-        if epoch % 3 == 2:
+        # Check Learning rate after Each epoch
+        if epoch % 45 == 0 and epoch != 0:
             for g in optimizer.param_groups:
-                g['lr'] = g['lr'] * 0.99
+                g['lr'] = g['lr'] * 0.92
             print("[%s] Updating running rate to %.3f" % (str(datetime.now()), g['lr']))
 
         if epoch == 0:
@@ -290,14 +250,12 @@ if __name__ == '__main__':
             delay_secs = end_time - begin_time
             print("[%s] One epoch took %d seconds" % (str(datetime.now()), delay_secs))
 
-        current_epoch_avg_loss = running_loss / (i + 1)
-
         # Save better results
         if args.save_every_epoch or \
-                epoch_avg_loss_prev is None or current_epoch_avg_loss < epoch_avg_loss_prev:
+                epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
             basepath = '.checkpoints' + os.sep
             savepath = basepath + '%s-mobilenetv3-custom-w%.2f-r%d-epoch%03d-loss%.3f-nextlr%.6f.pth' % \
-                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, current_epoch_avg_loss, optimizer.param_groups[0]['lr'])
+                       (run_footprint,  args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'])
 
             if not os.path.isdir(basepath):
                 os.mkdir(basepath)
@@ -307,10 +265,10 @@ if __name__ == '__main__':
 
             torch.save(base_model.state_dict(), savepath)
 
-        epoch_avg_loss_cumulative += current_epoch_avg_loss
-        epoch_avg_loss_prev = current_epoch_avg_loss
+        epoch_avg_loss_cumulative += running_loss
+        epoch_avg_loss_prev = running_loss
 
         print(f'[{str(datetime.now())}]' + '[epoch %03d] current epoch average loss: %.3f' %
-              (epoch + 1, current_epoch_avg_loss))
+              (epoch + 1, running_loss))
 
     print("Training success")
