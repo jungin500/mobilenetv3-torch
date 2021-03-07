@@ -186,7 +186,7 @@ if __name__ == '__main__':
 
     if args.continue_weight is not None:
         logger.info("Loading weight file: %s" % args.continue_weight)
-        model.load_state_dict(torch.load(args.continue_weight))
+        base_model.load_state_dict(torch.load(args.continue_weight))
 
     model = model.to(device)
 
