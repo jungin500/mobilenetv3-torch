@@ -35,16 +35,17 @@ class BC:
 
 
 class OutputLogger(object):
-    def __init__(self, run_uuid):
+    def __init__(self, run_uuid, run_name):
         self.writer = open('latest.log', 'a')
         self.print = print
         self.sep = '\n'
         self.run_uuid = run_uuid
+        self.run_name = run_name
 
-        self.__write__('\n\n** Training %s Started **' % self.run_uuid)
+        self.__write__('\n\n** Training %s (%s) Started **' % (self.run_uuid, self.run_name))
 
     def __del__(self):
-        self.__write__('** Training %s End **\n\n' % self.run_uuid)
+        self.__write__('** Training %s (%s) End **\n\n' % (self.run_uuid, self.run_name))
         self.writer.flush()
         self.writer.close()
 

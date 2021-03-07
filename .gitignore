@@ -2,6 +2,7 @@
 .annotations/
 __pycache__/
 .ipynb_checkpoints/
+.tensorboard/
 voc.names
 .idea/
 *.pth

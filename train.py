@@ -8,6 +8,8 @@ import uuid
 import torch
 import torchsummary
 from torchvision import transforms
+from torchvision.utils import make_grid
+from torch.utils.tensorboard import SummaryWriter
 
 from imagenet import ImageNet
 from voc import VOC
@@ -22,6 +24,7 @@ if __name__ == '__main__':
     parser.add_argument('--root-dir', default=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
                         help=r'Annotation root directory which contains folder (default: S:\ILSVRC2012-CLA-DET\ILSVRC), could be .annotations/')
     parser.add_argument('--dataset-type', '-t', default='imagenet', help='Dataset type (default: imagenet, available: imagenet, voc)')
+    parser.add_argument('--run-name', default='mobilenetv3-experimental', help='Run name which will be written on Tensorboard as well as Weight files (default: mobilenetv3-experimental)')
     parser.add_argument('--batch-size', '-b', type=int, default=128, help='Batch size (default: 128)')
     parser.add_argument('--input-size', '-i', type=int, default=224,
                         help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
@@ -56,13 +59,16 @@ if __name__ == '__main__':
 
     # Unique run footprint string (could be UUID)
     run_uuid = str(uuid.uuid1())
-    logger = OutputLogger(run_uuid)
+    logger = OutputLogger(run_uuid, args.run_name)
 
     torch.backends.cudnn.benchmark = True
     device = torch.device('cuda:0') if args.gpu else torch.device('cpu')
 
     if not args.gpu:
         logger.info("Using CPU trainer!")
+        
+    # Tensorboard!
+    tensorboard = SummaryWriter('.tensorboard/%s-%s' % (run_uuid[:4], args.run_name))
     
     if args.dataset_type.lower() == 'imagenet':
         labels = LabelReader(label_file_path=args.label_list).load_label()
@@ -196,7 +202,7 @@ if __name__ == '__main__':
         exit(0)
 
     cpu_device = torch.device('cpu')
-    epoch_print_interval = args.print_interval
+    valid_in_batch_interval = args.print_interval
     
     # We will save one batch of this Validation Dataloader
     # as valid_dataloader is ONLY ONE BATCH!
@@ -207,7 +213,8 @@ if __name__ == '__main__':
     epoch_avg_loss_prev = None
     logger.info("Begin training sequence - initializing dataset (first enumeration)")
     for epoch in range(args.epochs):
-
+        tensorboard.add_scalar('Hyperparameters/Learning Rate/Epoch', optimizer.param_groups[0]['lr'], epoch)
+        
         if epoch == 0:
             logger.info("Epoch timer began")
             begin_time = time()
@@ -241,10 +248,12 @@ if __name__ == '__main__':
             loss = criterion(output, label)
             loss.backward()  # if - loss is 6.907756328582764, then output might be all-zeros.
             optimizer.step()
+            
+            tensorboard.add_scalar('Loss/Batch', loss, epoch * len(train_dataloader) + i)
             running_loss += loss.item()
 
             # Begin debug validation
-            if args.fast_debug or (i == 0 or i % epoch_print_interval == (epoch_print_interval - 1)):
+            if args.fast_debug or (i == 0 or i % valid_in_batch_interval == (valid_in_batch_interval - 1)):
                 acc_avg_iterations += 1  # later, we will divide by this value
                 
                 model.eval()
@@ -258,6 +267,8 @@ if __name__ == '__main__':
 
                 metric = metric.to(cpu_device).numpy()
                 metric = int(metric.item() * 10000) / 100.0
+                
+                tensorboard.add_scalar('Accuracy/Trainset/Batch', metric / 100, epoch * len(train_dataloader) + i)
                 acc_avg_train += metric
                 
                 # Also, REAL validation for each batch! (Optional)
@@ -270,6 +281,8 @@ if __name__ == '__main__':
                 validset_metric = (torch.sum(diff) / output.shape[0])
                 validset_metric = validset_metric.to(cpu_device).numpy()
                 validset_metric = int(validset_metric.item() * 10000) / 100.0
+                
+                tensorboard.add_scalar('Accuracy/Validset/Batch', validset_metric / 100, epoch * len(train_dataloader) + i)
                 acc_avg_valid += validset_metric
 
                 logger.info("[EP:%04d/%04d][1/2][BA:%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tMetric (Accuracy on Validset): %.2f%%\tLoss: %.6f" %
@@ -278,7 +291,7 @@ if __name__ == '__main__':
                 
                 if validset_metric >= 99.99:
                     basepath = '.checkpoints' + os.sep
-                    basemodel_filename = '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                    basemodel_filename = '%s-%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.run_name, args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
                     savepath = basepath + basemodel_filename
 
                     if not os.path.isdir(basepath):
@@ -292,10 +305,13 @@ if __name__ == '__main__':
             # One-epoch training end
 
         running_loss /= (i + 1)
+        tensorboard.add_scalar('Loss/Epoch', running_loss.to(cpu_device).numpy().item(), epoch)
         
         # two metrics are NOT based on each batches
         acc_avg_train /= acc_avg_iterations
         acc_avg_valid /= acc_avg_iterations
+        tensorboard.add_scalar('Accuracy/Trainset/Epoch', acc_avg_train / 100, epoch)
+        tensorboard.add_scalar('Accuracy/Validset/Epoch', acc_avg_valid / 100, epoch)
 
         # Validation time
         if args.fast_debug:
@@ -339,7 +355,7 @@ if __name__ == '__main__':
             if args.save_every_epoch or \
                     epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
                 basepath = '.checkpoints' + os.sep
-                basemodel_filename = '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                basemodel_filename = '%s-%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.run_name, args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
                 savepath = basepath + basemodel_filename
 
                 if not os.path.isdir(basepath):
