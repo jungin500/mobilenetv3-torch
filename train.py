@@ -9,7 +9,8 @@ import torch
 import torchsummary
 from torchvision import transforms
 
-from Dataset import ImageNet, HDF5Dataset, SingleHDF5Dataset
+from imagenet import ImageNet
+from voc import VOC
 from ILSVRC2012Preprocessor import LabelReader
 from Model import MobileNetV3
 from output_logger import OutputLogger
@@ -19,7 +20,8 @@ if __name__ == '__main__':
     parser.add_argument('--label-list', default='label.list',
                         help='label.list (e.g. File filled with lines containing "n03251766|dryer, drier\\n", ...) ')
     parser.add_argument('--root-dir', default=r'S:\ILSVRC2012-CLA-DET\ILSVRC',
-                        help=r'Annotation root directory which contains folder (default: S:\ILSVRC2012-CLA-DET\ILSVRC)')
+                        help=r'Annotation root directory which contains folder (default: S:\ILSVRC2012-CLA-DET\ILSVRC), could be .annotations/')
+    parser.add_argument('--dataset-type', '-t', default='imagenet', help='Dataset type (default: imagenet, available: imagenet, voc)')
     parser.add_argument('--batch-size', '-b', type=int, default=128, help='Batch size (default: 128)')
     parser.add_argument('--input-size', '-i', type=int, default=224,
                         help='Image input size (default: 224, candidates: 224, 192, 160, 128)')
@@ -48,6 +50,8 @@ if __name__ == '__main__':
                         help='(Optional) summarize model')
     parser.add_argument('--epochs', '-e', default=200, type=int,
                         help='Epochs (default: 200)')
+    parser.add_argument('--print-interval', default=100, type=int,
+                        help='Batch process print interval (default: 200)')
     args = parser.parse_args()
 
     # Unique run footprint string (could be UUID)
@@ -59,26 +63,56 @@ if __name__ == '__main__':
 
     if not args.gpu:
         logger.info("Using CPU trainer!")
-
-    labels = LabelReader(label_file_path=args.label_list).load_label()
-
-    datasets = ImageNet(
-        labels=labels,
-        root_dir=args.root_dir,
-        device=torch.device('cpu'),
-        input_size=args.input_size,
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop((args.input_size, args.input_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ]),
-        use_cache=not args.no_cache,
-        dataset_usage_pct=args.dataset_pct
-    )
+    
+    if args.dataset_type.lower() == 'imagenet':
+        labels = LabelReader(label_file_path=args.label_list).load_label()
+        datasets = ImageNet(
+            labels=labels,
+            root_dir=args.root_dir,
+            device=torch.device('cpu'),
+            input_size=args.input_size,
+            transform=transforms.Compose([
+                transforms.RandomResizedCrop((args.input_size, args.input_size)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ]),
+            use_cache=not args.no_cache,
+            dataset_usage_pct=args.dataset_pct
+        )
+    elif args.dataset_type.lower() == 'voc':
+        labels = []
+        with open(args.label_list, 'r') as f:
+            items = f.read().rstrip().split("\n")
+            for item in items:
+                if '|' in item:
+                    raise RuntimeError("Requires VOC labels, not a ImageNet one! specify voc.label file with --label-list !")
+                labels.append(item.rstrip())
+        
+        datasets = VOC(
+            labels=labels,
+            root_dir=args.root_dir,
+            device=torch.device('cpu'),
+            input_size=args.input_size,
+            transform=transforms.Compose([
+                transforms.RandomResizedCrop((args.input_size, args.input_size)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ]),
+            use_cache=not args.no_cache,
+            dataset_usage_pct=args.dataset_pct
+        )
+        
+        # raise RuntimeError("Not Yet Implemented")
+    else:
+        raise RuntimeError("Dataset type not supported!")
 
     validset_items = args.batch_size * 1  # one-batch only
     trainset_items = len(datasets) - validset_items
@@ -141,7 +175,8 @@ if __name__ == '__main__':
                 torch.nn.init.zeros_(m.bias)
 
     model.apply(xavier_init)
-    model = torch.nn.DataParallel(model)
+    if args.gpu:
+        model = torch.nn.DataParallel(model)
 
     if args.continue_weight is not None:
         logger.info("Loading weight file: %s" % args.continue_weight)
@@ -161,7 +196,11 @@ if __name__ == '__main__':
         exit(0)
 
     cpu_device = torch.device('cpu')
-    epoch_print_interval = 100
+    epoch_print_interval = args.print_interval
+    
+    # We will save one batch of this Validation Dataloader
+    # as valid_dataloader is ONLY ONE BATCH!
+    saved_validation_set = next(iter(valid_dataloader))
 
     first_epoch = True
     epoch_avg_loss_cumulative = 0
@@ -175,7 +214,9 @@ if __name__ == '__main__':
 
         # Training time
         running_loss = torch.tensor(0.0, device=device)
-        running_metric = 0
+        acc_avg_train = 0
+        acc_avg_valid = 0
+        acc_avg_iterations = 0
 
         model.train()
         for i, data in enumerate(train_dataloader):
@@ -203,8 +244,9 @@ if __name__ == '__main__':
             running_loss += loss.item()
 
             # Begin debug validation
-            if args.fast_debug or \
-                    (i == 0 or i % epoch_print_interval == (epoch_print_interval - 1)):
+            if args.fast_debug or (i == 0 or i % epoch_print_interval == (epoch_print_interval - 1)):
+                acc_avg_iterations += 1  # later, we will divide by this value
+                
                 model.eval()
                 output_metric = torch.softmax(output, dim=1)
                 output_metric = torch.argmax(output_metric, dim=1, keepdim=False)
@@ -216,27 +258,44 @@ if __name__ == '__main__':
 
                 metric = metric.to(cpu_device).numpy()
                 metric = int(metric.item() * 10000) / 100.0
-                running_metric += metric
+                acc_avg_train += metric
+                
+                # Also, REAL validation for each batch! (Optional)
+                input, label = saved_validation_set
+                output = model(input)
+                output = torch.softmax(output, dim=1)
+                output = torch.argmax(output, dim=1, keepdim=False)
+                label = label.to(device)
+                diff = (output == label).int()
+                validset_metric = (torch.sum(diff) / output.shape[0])
+                validset_metric = validset_metric.to(cpu_device).numpy()
+                validset_metric = int(validset_metric.item() * 10000) / 100.0
+                acc_avg_valid += validset_metric
 
-                logger.info("[EP:%04d/%04d][1/2][BA:%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tLoss: %.6f" %
-                      (epoch + 1, args.epochs, i + 1, len(train_dataloader), non_zeros_count, metric, loss.item()))
-                if metric >= 99.99:
+                logger.info("[EP:%04d/%04d][1/2][BA:%04d/%04d] avg Non-zeros of output: %d,\tMetric (Accuracy on Trainset): %.2f%%\tMetric (Accuracy on Validset): %.2f%%\tLoss: %.6f" %
+                      (epoch + 1, args.epochs, i + 1, len(train_dataloader), non_zeros_count, validset_metric, metric, loss.item()))
+                # End for REAL validation of each batch
+                
+                if validset_metric >= 99.99:
                     basepath = '.checkpoints' + os.sep
-                    savepath = basepath + '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
-                               (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                    basemodel_filename = '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                    savepath = basepath + basemodel_filename
 
                     if not os.path.isdir(basepath):
                         os.mkdir(basepath)
 
-                    torch.save(base_model.state_dict(), savepath)
-                    logger.info("Metric Overwhelmed! Saved model to %s and Exciting ..." % savepath)
+                    torch.save(base_model.state_dict(), basepath + basemodel_filename)
+                    logger.info("Metric Overwhelmed! Saved model to %s and Exciting ..." % basepath + basemodel_filename)
                     exit(0)
                 model.train()
             # End debug validation
             # One-epoch training end
 
         running_loss /= (i + 1)
-        running_metric /= (i + 1)
+        
+        # two metrics are NOT based on each batches
+        acc_avg_train /= acc_avg_iterations
+        acc_avg_valid /= acc_avg_iterations
 
         # Validation time
         if args.fast_debug:
@@ -244,36 +303,31 @@ if __name__ == '__main__':
         else:
             logger.info("[EP:%04d/%04d][2/2] Validation - generating metric" % (epoch + 1, args.epochs))
             model.eval()
-            validation_total_acc = 0
-            validation_items = 0
-            for i, data in enumerate(valid_dataloader):
-                input, label = data
+            input, label = saved_validation_set
 
-                output = model(input)
-                output = torch.softmax(output, dim=1)
-                output = torch.argmax(output, dim=1, keepdim=False)
-                if output.device.type != label.device.type:
-                    label = label.to(device)
+            output = model(input)
+            output = torch.softmax(output, dim=1)
+            output = torch.argmax(output, dim=1, keepdim=False)
+            if output.device.type != label.device.type:
+                label = label.to(device)
 
-                diff = (output == label).int()
-                metric = (torch.sum(diff) / output_metric.shape[0])
-
-                validation_total_acc += metric
-                validation_items += diff.shape[0]
-
-            metric = validation_total_acc / validation_items
+            diff = (output == label).int()
+            metric = (torch.sum(diff) / output.shape[0])
             metric = metric.to(cpu_device).numpy()
             metric = int(metric.item() * 10000) / 100.0
 
-            logger.info("[EP:%04d/%04d][2/2] Validation - score: %.5f" % (epoch + 1, args.epochs, metric))
+            logger.info("[EP:%04d/%04d][2/2] Validation - score: %.2f%%" % (epoch + 1, args.epochs, metric))
             model.train()
 
 
         # Check Learning rate after Each epoch
-        if epoch % 45 == 0 and epoch != 0:
+        # if epoch % 45 == 0 and epoch != 0:
+        # VOC dataset is very-sensitive? do for every epochs
+        # VOC might be too small for model!
+        if epoch % 5 == 0 and epoch != 0:
             for g in optimizer.param_groups:
                 g['lr'] = g['lr'] * 0.92
-            logger.info("[EP:%04d/%04d] Updating running rate to %.3f" % (epoch + 1, args.epochs, g['lr']))
+            logger.info("[EP:%04d/%04d] Updating running rate to %.6f" % (epoch + 1, args.epochs, g['lr']))
 
         if epoch == 0:
             end_time = time()
@@ -285,19 +339,19 @@ if __name__ == '__main__':
             if args.save_every_epoch or \
                     epoch_avg_loss_prev is None or running_loss < epoch_avg_loss_prev:
                 basepath = '.checkpoints' + os.sep
-                savepath = basepath + '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % \
-                           (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                basemodel_filename = '%s-w%.2f-r%d-epoch%04d-loss%.3f-nextlr%.6f-acc%.6f.pth' % (run_uuid[:4], args.width_mult, args.input_size, epoch + 1, running_loss, optimizer.param_groups[0]['lr'], metric / 100)
+                savepath = basepath + basemodel_filename
 
                 if not os.path.isdir(basepath):
                     os.mkdir(basepath)
 
-                torch.save(base_model.state_dict(), savepath)
-                logger.info('Model saved to: %s' % savepath)
+                torch.save(base_model.state_dict(), basepath + basemodel_filename)
+                logger.info('Base Model saved to: %s' % savepath)
 
         epoch_avg_loss_cumulative += running_loss
         epoch_avg_loss_prev = running_loss
 
-        logger.info('[EP:%04d/%04d] Average loss: %.3f\tAverage accuracy (Trainset): %.1f%%' % (epoch + 1, args.epochs, running_loss, running_metric))
+        logger.info('[EP:%04d/%04d] Average loss: %.3f\tAverage accuracy (Trainset): %.1f%%\tAverage accuracy (Validset): %.1f%%' % (epoch + 1, args.epochs, running_loss, acc_avg_train, acc_avg_valid))
 
         if first_epoch:
             first_epoch = False

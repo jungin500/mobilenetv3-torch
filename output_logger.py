@@ -41,10 +41,10 @@ class OutputLogger(object):
         self.sep = '\n'
         self.run_uuid = run_uuid
 
-        self.__write__('** Training %s Started **' % self.run_uuid)
+        self.__write__('\n\n** Training %s Started **' % self.run_uuid)
 
     def __del__(self):
-        self.__write__('** Training %s End **' % self.run_uuid)
+        self.__write__('** Training %s End **\n\n' % self.run_uuid)
         self.writer.flush()
         self.writer.close()
 

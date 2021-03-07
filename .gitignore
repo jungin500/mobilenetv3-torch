@@ -1,6 +1,8 @@
 .cache/
 .annotations/
 __pycache__/
+.ipynb_checkpoints/
+voc.names
 .idea/
 *.pth
 *.bak
