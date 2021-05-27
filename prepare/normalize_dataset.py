@@ -1,10 +1,12 @@
 import cv2
-from prepare import VOC
+from prepare import VOC, LabelReader, ImageNet
 import numpy as np
 from tqdm import tqdm
 
 if __name__ == '__main__':
-    dataset = VOC(root_dir=r'C:\Dataset\VOCdevkit\VOC2008')
+    # dataset = VOC(root_dir=r'C:\Dataset\VOCdevkit\VOC2008')
+    labels = LabelReader(label_file_path='imagenet_label.list').load_label()
+    dataset = ImageNet(labels=labels, root_dir=r'C:\Dataset\ILSVRC\Data\CLS-LOC\train')
     image_list_nodupe = list(dict.fromkeys(dataset.img_path_list))
 
     values = np.zeros((3, len(image_list_nodupe)))

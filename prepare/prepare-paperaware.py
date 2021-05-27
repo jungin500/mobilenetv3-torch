@@ -18,6 +18,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm import tqdm
 
+from torch_ema import ExponentialMovingAverage
+
 
 class LabelReader(object):
     def __init__(self, label_file_path):
@@ -322,10 +324,8 @@ class VOC(Dataset):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--gpu', '-g', default=False, action='store_true', help='Enables GPU')
-    parser.add_argument('--batch-size', '-b', default=128, type=int, help='Batch Size (default: 128)')
     parser.add_argument('--epochs', '-e', default=200, type=int, help='Epochs (default: 200)')
     parser.add_argument('--num-workers', '-p', default=0, type=int, help='num_workers (default: 0)')
-    parser.add_argument('--learning-rate', '-lr', type=float, default=0.005, help='Learning rate (default: 0.005)')
     parser.add_argument('--continue-weight', '-c', default=None, type=str, help='load weight and continue training')
     parser.add_argument('--init-lr', '-ilr', default=False, action='store_true', help='Sets default learning rate rather than weight value')
     args = parser.parse_args()
@@ -377,11 +377,12 @@ if __name__ == '__main__':
     )
 
     dataloader_extras = {'shuffle': True, 'num_workers': args.num_workers, 'pin_memory': True, 'drop_last': False}
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, **dataloader_extras)
-    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=max(1, args.batch_size // 4), **dataloader_extras)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=384, **dataloader_extras)
+    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=max(1, 192), **dataloader_extras)
 
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.009375, weight_decay=1e-5)
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999)
 
     total_epochs = args.epochs
     summary_writer = torch.utils.tensorboard.SummaryWriter(
@@ -436,6 +437,7 @@ if __name__ == '__main__':
             loss = criterion(output, label)
             loss.backward()
             optimizer.step()
+            ema.update(model.parameters())
 
             with torch.no_grad():
                 accuracy = torch.mean(torch.eq(torch.argmax(output, dim=1), label).int().float())
@@ -459,6 +461,8 @@ if __name__ == '__main__':
         accuracies = []
         losses = []
         model.train(False)
+        ema.store(model.parameters())
+        ema.copy_to(model.parameters())
         for i, (image, label) in vl:
             if device.type != label.device.type:
                 image = image.to(device)
@@ -473,6 +477,7 @@ if __name__ == '__main__':
 
             vl.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Validation Loss: %.4f, Accuracy: %.4f" %
                         (epoch + 1, total_epochs, i, len(valid_dataloader), np.mean(losses), np.mean(accuracies)))
+        ema.restore(model.parameters())
 
         for i in range(len(losses)):
             summary_writer.add_scalar('Validation/Batch Loss', losses[i], epoch * len(valid_dataloader) + i)
@@ -484,9 +489,9 @@ if __name__ == '__main__':
         summary_writer.add_scalar('Validation/Epoch Loss', val_loss_value, epoch)
         summary_writer.add_scalar('Validation/Epoch Accuracy', val_acc_value, epoch)
 
-        if epoch % 100 == 0 and epoch != 0:
+        if epoch % 3 == 0 and epoch != 0:
             for g in optimizer.param_groups:
-                g['lr'] = g['lr'] * 0.92
+                g['lr'] = g['lr'] * 0.99
             print("[Epoch %04d/%04d] Reducing learning rate to %.6f" % (epoch + 1, args.epochs, g['lr']))
 
         if not epoch_val_accuracies or np.max(epoch_val_accuracies) < val_acc_value:
