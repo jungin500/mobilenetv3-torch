@@ -11,6 +11,7 @@ import pickle
 from xml.etree import ElementTree
 
 import numpy as np
+import random
 import torchsummary
 import torch
 from torch import nn
@@ -325,8 +326,12 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--gpu', '-g', default=False, action='store_true', help='Enables GPU')
     parser.add_argument('--epochs', '-e', default=200, type=int, help='Epochs (default: 200)')
+    parser.add_argument('--learning-rate', '-l', default=0.005, type=float, help='Learning rate (default: 0.005)')
+    parser.add_argument('--batch-size', '-b', default=384, type=int, help='Batch size (default: 384)')
     parser.add_argument('--num-workers', '-p', default=0, type=int, help='num_workers (default: 0)')
+    parser.add_argument('--seed', '-s', default=None, type=int, help='Use deterministic algorithms and give static seeds (default: None)')
     parser.add_argument('--continue-weight', '-c', default=None, type=str, help='load weight and continue training')
+    parser.add_argument('--run-name', '-rn', default=None, type=str, help='Run name (used in checkpoints and tensorboard logdir name')
     parser.add_argument('--init-lr', '-ilr', default=False, action='store_true', help='Sets default learning rate rather than weight value')
     args = parser.parse_args()
 
@@ -335,40 +340,39 @@ if __name__ == '__main__':
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+    # Disable randomizing while testing hyperparameters
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.benchmark = False
+        # can't use deterministic algorithms here
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
 
     model = MobileNetV3(width_mult=1.0, classifier=True, classifier_out_features=1000).float().to(device)
-    torchsummary.summary(model, input_size=(3, 224, 224), device=device.type)
+    # distributed model
+    # model = torch.nn.DataParallel(model)
+    # torchsummary.summary(model, input_size=(3, 224, 224), device=device.type)
 
     labels = LabelReader(label_file_path='imagenet_label.list').load_label()
     datasets = ImageNet(
         labels=labels,
-        root_dir=r'C:\Dataset\ILSVRC\Data\CLS-LOC\train',
+        root_dir='/dataset/Data/CLS-LOC/train',
         transform=transforms.Compose([
             transforms.RandomResizedCrop((224, 224)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(
-                # mean=[0.485, 0.456, 0.406],
-                # std=[0.229, 0.224, 0.225]
-                # VOC-mean, stds
-                mean=[0.4547857, 0.4349471, 0.40525291],
-                std=[0.12003352, 0.12323549, 0.1392444]
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
             )
         ])
     )
-    # datasets = VOC(
-    #     root_dir=r'C:\Dataset\VOCdevkit\VOC2008',
-    #     transform=transforms.Compose([
-    #         transforms.RandomResizedCrop((224, 224)),
-    #         transforms.RandomHorizontalFlip(),
-    #         transforms.ToTensor(),
-    #         transforms.Normalize(
-    #             mean=[0.4547857, 0.4349471, 0.40525291],
-    #             std=[0.12003352, 0.12323549, 0.1392444]
-    #         )
-    #     ])
-    # )
 
     validset_items = int(len(datasets) * 0.1)
     trainset_items = len(datasets) - validset_items
@@ -377,21 +381,20 @@ if __name__ == '__main__':
     )
 
     dataloader_extras = {'shuffle': True, 'num_workers': args.num_workers, 'pin_memory': True, 'drop_last': False}
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=384, **dataloader_extras)
-    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=max(1, 192), **dataloader_extras)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, **dataloader_extras)
+    valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=max(1, int(args.batch_size / 3)), **dataloader_extras)
 
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.009375, weight_decay=1e-5)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=args.learning_rate, weight_decay=1e-5, momentum=0.9)
     ema = ExponentialMovingAverage(model.parameters(), decay=0.9999)
 
     total_epochs = args.epochs
-    summary_writer = torch.utils.tensorboard.SummaryWriter(
-        log_dir=os.path.join('logs', '%s-lr%.6f'% (
-                datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
-                optimizer.param_groups[0]['lr']
-            )
-        )
-    )
+    run_name = args.run_name if args.run_name is not None else 'MobileNetV3-Large-LR%.6f' % (args.learning_rate, )
+    run_name = run_name + datetime.datetime.now().strftime('-%Y-%m-%d-%H-%M-%S')
+
+    print("학습 시작 (run_name: %s)" % run_name)
+
+    summary_writer = torch.utils.tensorboard.SummaryWriter(log_dir=os.path.join('logs', run_name))
 
     if args.continue_weight:
         if not os.path.isfile(args.continue_weight):
@@ -416,9 +419,10 @@ if __name__ == '__main__':
     else:
         epoch_range = range(total_epochs)
 
-    run_name = "MobileNetV3-Large-%s" % (datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S'))
+    # scaler = torch.cuda.amp.GradScaler()
 
     epoch_val_accuracies = []
+    exit_reason = 0
     for epoch in epoch_range:
         tr = tqdm(enumerate(train_dataloader), total=len(train_dataloader), ncols=160,
                   desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
@@ -428,15 +432,20 @@ if __name__ == '__main__':
         losses = []
         model.train(True)
         for i, (image, label) in tr:
-            if device.type != label.device.type:
-                image = image.to(device)
-                label = label.to(device)
+            # with torch.cuda.amp.autocast():
+            image = image.cuda(device, non_blocking=True)
+            label = label.cuda(device, non_blocking=True)
 
-            optimizer.zero_grad()
             output = model(image)
             loss = criterion(output, label)
+
             loss.backward()
             optimizer.step()
+            # scaler.scale(loss).backward()
+            # scaler.step(optimizer)
+            # scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+
             ema.update(model.parameters())
 
             with torch.no_grad():
@@ -449,11 +458,19 @@ if __name__ == '__main__':
                 tr.set_description("[Epoch %04d/%04d][Image Batch %04d/%04d] Training Loss: %.4f Training Accuracy: %.4f" %
                                    (epoch + 1, total_epochs, i, len(train_dataloader), np.mean(losses), np.mean(accuracies)))
 
+                if np.isnan(np.mean(losses)):
+                    break
+
         train_loss_value = np.mean(losses)
         train_accuracy_value = np.mean(accuracies)
 
         summary_writer.add_scalar('Training/Epoch Loss', train_loss_value, epoch)
         summary_writer.add_scalar('Training/Epoch Accuracy', train_accuracy_value, epoch)
+
+        if np.isnan(np.mean(losses)):
+            print("Exiting training due to NaN Loss ...")
+            exit_reason = -1
+            break
 
         vl = tqdm(enumerate(valid_dataloader), total=len(valid_dataloader), ncols=160,
                   desc='[Epoch %04d/%04d] Spawning Workers' % (epoch + 1, total_epochs))
@@ -508,3 +525,6 @@ if __name__ == '__main__':
             print("[Epoch %04d/%04d] Saved checkpoint %s" % (epoch + 1, args.epochs, save_filename))
 
         epoch_val_accuracies.append(val_acc_value)
+
+    if exit_reason != 0:
+        exit(-1)
