@@ -1,3 +1,6 @@
+# mobilenetv3-torch
+MobileNetV3 PyTorch implementation (V1) - [Check out](https://github.com/jungin500/mobilenetv3-torch-v2/tree/v2) `v2` branch for newer implementation
+
 # Single-batch trials
 
 - Trial 01: `python train.py -g -l 0.01 -p 0.001 -b 512`
