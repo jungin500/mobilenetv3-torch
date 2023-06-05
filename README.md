@@ -1,5 +1,5 @@
-# ipcvl2021-mobilenetv3-torch-v2
-MobileNetV3 PyTorch implementation (V2)
+# mobilenetv3-torch
+MobileNetV3 PyTorch implementation (V2) - [Check out](https://github.com/jungin500/mobilenetv3-torch-v2/tree/v1) `v1` branch for older implementation
 
 # 1. MobileNetV3-0.5 classifier
 ## 1.1. Overview
